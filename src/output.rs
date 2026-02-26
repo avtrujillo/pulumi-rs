@@ -1,8 +1,9 @@
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
-use tokio::sync::Mutex;
+
+use crate::error::Error;
 
 /// Represents a value that may not yet be known.
 ///
@@ -29,9 +30,9 @@ struct OutputInner<T: Clone + Send + Sync + 'static> {
 
 enum OutputState<T> {
     /// The value is pending resolution.
-    Pending(Vec<oneshot::Sender<T>>),
-    /// The value has been resolved.
-    Resolved(T),
+    Pending(Vec<oneshot::Sender<Result<T, Arc<Error>>>>),
+    /// The value has been resolved successfully or with an error.
+    Resolved(Result<T, Arc<Error>>),
 }
 
 impl<T: Clone + Send + Sync + 'static> Output<T> {
@@ -39,7 +40,7 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
     pub fn new(value: T) -> Self {
         Output {
             inner: Arc::new(OutputInner {
-                data: Mutex::new(OutputState::Resolved(value)),
+                data: Mutex::new(OutputState::Resolved(Ok(value))),
                 deps: Mutex::new(Vec::new()),
                 known: Mutex::new(true),
                 secret: Mutex::new(false),
@@ -76,7 +77,7 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
     /// Creates a secret output with the given value.
     pub fn secret(value: T) -> Self {
         let inner = Arc::new(OutputInner {
-            data: Mutex::new(OutputState::Resolved(value)),
+            data: Mutex::new(OutputState::Resolved(Ok(value))),
             deps: Mutex::new(Vec::new()),
             known: Mutex::new(true),
             secret: Mutex::new(true),
@@ -84,21 +85,28 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         Output { inner }
     }
 
-    /// Waits for this output to resolve and returns its value.
-    pub async fn get(&self) -> T {
+    /// Waits for this output to resolve and returns its value, or an error
+    /// if the output was rejected or the resolver was dropped.
+    pub async fn get(&self) -> crate::error::Result<T> {
         // Fast path: check if already resolved.
         {
-            let data = self.inner.data.lock().await;
-            if let OutputState::Resolved(ref val) = *data {
-                return val.clone();
+            let data = self.inner.data.lock().unwrap();
+            if let OutputState::Resolved(ref result) = *data {
+                return result
+                    .clone()
+                    .map_err(|arc| Error::Custom(arc.to_string()));
             }
         }
 
         // Slow path: register a waiter.
         let rx = {
-            let mut data = self.inner.data.lock().await;
+            let mut data = self.inner.data.lock().unwrap();
             match *data {
-                OutputState::Resolved(ref val) => return val.clone(),
+                OutputState::Resolved(ref result) => {
+                    return result
+                        .clone()
+                        .map_err(|arc| Error::Custom(arc.to_string()));
+                }
                 OutputState::Pending(ref mut waiters) => {
                     let (tx, rx) = oneshot::channel();
                     waiters.push(tx);
@@ -107,28 +115,33 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
             }
         };
 
-        rx.await.expect("output resolver dropped without resolving")
+        rx.await
+            .map_err(|_| Error::Custom("output resolver dropped without resolving".into()))?
+            .map_err(|arc| Error::Custom(arc.to_string()))
     }
 
     /// Returns the URN dependencies of this output.
-    pub async fn dependencies(&self) -> Vec<String> {
-        self.inner.deps.lock().await.clone()
+    pub fn dependencies(&self) -> Vec<String> {
+        self.inner.deps.lock().unwrap().clone()
     }
 
     /// Returns whether this output's value is known.
-    pub async fn is_known(&self) -> bool {
-        *self.inner.known.lock().await
+    pub fn is_known(&self) -> bool {
+        *self.inner.known.lock().unwrap()
     }
 
     /// Returns whether this output is a secret.
-    pub async fn is_secret(&self) -> bool {
-        *self.inner.secret.lock().await
+    pub fn is_secret(&self) -> bool {
+        *self.inner.secret.lock().unwrap()
     }
 
     /// Transforms the output value by applying `f` to it once resolved.
     ///
     /// This is the Pulumi equivalent of `apply` — it lets you derive new values
     /// from resource outputs while preserving dependency tracking.
+    ///
+    /// If the source output was rejected with an error, the error propagates
+    /// and `f` is never called.
     ///
     /// ```ignore
     /// let name: Output<String> = bucket.name();
@@ -147,25 +160,25 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         let source_inner = self.inner.clone();
 
         tokio::spawn(async move {
-            // Copy deps.
+            // Copy deps/known/secret.
             {
-                let source_deps = source_inner.deps.lock().await;
-                let mut out_deps = out_inner.deps.lock().await;
+                let source_deps = source_inner.deps.lock().unwrap();
+                let mut out_deps = out_inner.deps.lock().unwrap();
                 *out_deps = source_deps.clone();
             }
-            // Copy known/secret.
             {
-                let known = *source_inner.known.lock().await;
-                *out_inner.known.lock().await = known;
+                let known = *source_inner.known.lock().unwrap();
+                *out_inner.known.lock().unwrap() = known;
             }
             {
-                let secret = *source_inner.secret.lock().await;
-                *out_inner.secret.lock().await = secret;
+                let secret = *source_inner.secret.lock().unwrap();
+                *out_inner.secret.lock().unwrap() = secret;
             }
 
-            let val = source.get().await;
-            let mapped = f(val);
-            resolver.resolve(mapped).await;
+            match source.get().await {
+                Ok(val) => resolver.resolve(f(val)),
+                Err(e) => resolver.reject(e),
+            }
         });
 
         out
@@ -173,6 +186,9 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
 
     /// Like [`map`](Output::map), but the function returns an `Output<U>`,
     /// which is then flattened.
+    ///
+    /// If the source output was rejected with an error, the error propagates
+    /// and `f` is never called.
     pub fn flat_map<U, F>(&self, f: F) -> Output<U>
     where
         U: Clone + Send + Sync + 'static,
@@ -187,31 +203,37 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         tokio::spawn(async move {
             // Copy deps from source.
             {
-                let source_deps = source_inner.deps.lock().await;
-                let mut out_deps = out_inner.deps.lock().await;
+                let source_deps = source_inner.deps.lock().unwrap();
+                let mut out_deps = out_inner.deps.lock().unwrap();
                 *out_deps = source_deps.clone();
             }
             {
-                let known = *source_inner.known.lock().await;
-                *out_inner.known.lock().await = known;
+                let known = *source_inner.known.lock().unwrap();
+                *out_inner.known.lock().unwrap() = known;
             }
             {
-                let secret = *source_inner.secret.lock().await;
-                *out_inner.secret.lock().await = secret;
+                let secret = *source_inner.secret.lock().unwrap();
+                *out_inner.secret.lock().unwrap() = secret;
             }
 
-            let val = source.get().await;
-            let inner_output = f(val);
+            match source.get().await {
+                Ok(val) => {
+                    let inner_output = f(val);
 
-            // Also merge deps from the inner output.
-            {
-                let inner_deps = inner_output.inner.deps.lock().await;
-                let mut out_deps = out_inner.deps.lock().await;
-                out_deps.extend(inner_deps.iter().cloned());
+                    // Also merge deps from the inner output.
+                    {
+                        let inner_deps = inner_output.inner.deps.lock().unwrap();
+                        let mut out_deps = out_inner.deps.lock().unwrap();
+                        out_deps.extend(inner_deps.iter().cloned());
+                    }
+
+                    match inner_output.get().await {
+                        Ok(inner_val) => resolver.resolve(inner_val),
+                        Err(e) => resolver.reject(e),
+                    }
+                }
+                Err(e) => resolver.reject(e),
             }
-
-            let inner_val = inner_output.get().await;
-            resolver.resolve(inner_val).await;
         });
 
         out
@@ -224,43 +246,81 @@ impl<T: Clone + Send + Sync + 'static> std::fmt::Debug for Output<T> {
     }
 }
 
-/// Resolves a pending [`Output`] with a value.
+/// Resolves or rejects a pending [`Output`].
+///
+/// If dropped without calling [`resolve`](OutputResolver::resolve) or
+/// [`reject`](OutputResolver::reject), the output is automatically rejected
+/// with an error indicating the resolver was dropped.
 pub struct OutputResolver<T: Clone + Send + Sync + 'static> {
     inner: Arc<OutputInner<T>>,
 }
 
 impl<T: Clone + Send + Sync + 'static> OutputResolver<T> {
     /// Resolves the output with the given value, waking all waiters.
-    pub async fn resolve(self, value: T) {
-        let mut data = self.inner.data.lock().await;
-        let waiters = match std::mem::replace(&mut *data, OutputState::Resolved(value.clone())) {
+    pub fn resolve(self, value: T) {
+        self.complete(Ok(value));
+    }
+
+    /// Rejects the output with an error, waking all waiters.
+    pub fn reject(self, error: Error) {
+        self.complete(Err(error));
+    }
+
+    fn complete(self, result: Result<T, Error>) {
+        // Use ManuallyDrop to prevent Drop from running after we complete.
+        let me = std::mem::ManuallyDrop::new(self);
+        Self::complete_inner(&me.inner, result);
+    }
+
+    fn complete_inner(inner: &Arc<OutputInner<T>>, result: Result<T, Error>) {
+        let arc_result = result.map_err(Arc::new);
+        let mut data = inner.data.lock().unwrap();
+        let waiters = match std::mem::replace(&mut *data, OutputState::Resolved(arc_result.clone()))
+        {
             OutputState::Pending(waiters) => waiters,
-            OutputState::Resolved(_) => panic!("output resolved twice"),
+            OutputState::Resolved(_) => return,
         };
         for tx in waiters {
-            let _ = tx.send(value.clone());
+            let _ = tx.send(arc_result.clone());
         }
     }
 
     /// Marks the output as unknown and resolves it with a default value.
-    pub async fn resolve_unknown(self, default: T) {
-        *self.inner.known.lock().await = false;
-        self.resolve(default).await;
+    pub fn resolve_unknown(self, default: T) {
+        *self.inner.known.lock().unwrap() = false;
+        self.resolve(default);
     }
 
     /// Adds dependency URNs to the output.
-    pub async fn add_deps(&self, deps: impl IntoIterator<Item = String>) {
-        let mut current = self.inner.deps.lock().await;
+    pub fn add_deps(&self, deps: impl IntoIterator<Item = String>) {
+        let mut current = self.inner.deps.lock().unwrap();
         current.extend(deps);
     }
 
     /// Marks the output as containing a secret.
-    pub async fn set_secret(&self, secret: bool) {
-        *self.inner.secret.lock().await = secret;
+    pub fn set_secret(&self, secret: bool) {
+        *self.inner.secret.lock().unwrap() = secret;
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> Drop for OutputResolver<T> {
+    fn drop(&mut self) {
+        // If the resolver is dropped without resolving, reject with an error.
+        let data = self.inner.data.lock().unwrap();
+        if matches!(*data, OutputState::Pending(_)) {
+            drop(data);
+            Self::complete_inner(
+                &self.inner,
+                Err(Error::Custom(
+                    "output resolver dropped without resolving".into(),
+                )),
+            );
+        }
     }
 }
 
 /// Combines two outputs into one that resolves when both are ready.
+/// If either output is rejected, the combined output is rejected with that error.
 pub fn all2<A, B>(a: &Output<A>, b: &Output<B>) -> Output<(A, B)>
 where
     A: Clone + Send + Sync + 'static,
@@ -271,14 +331,18 @@ where
     let (out, resolver) = Output::<(A, B)>::unresolved();
 
     tokio::spawn(async move {
-        let (va, vb) = tokio::join!(a.get(), b.get());
-        resolver.resolve((va, vb)).await;
+        let (ra, rb) = tokio::join!(a.get(), b.get());
+        match (ra, rb) {
+            (Ok(va), Ok(vb)) => resolver.resolve((va, vb)),
+            (Err(e), _) | (_, Err(e)) => resolver.reject(e),
+        }
     });
 
     out
 }
 
 /// Combines three outputs into one.
+/// If any output is rejected, the combined output is rejected with that error.
 pub fn all3<A, B, C>(a: &Output<A>, b: &Output<B>, c: &Output<C>) -> Output<(A, B, C)>
 where
     A: Clone + Send + Sync + 'static,
@@ -291,14 +355,18 @@ where
     let (out, resolver) = Output::<(A, B, C)>::unresolved();
 
     tokio::spawn(async move {
-        let (va, vb, vc) = tokio::join!(a.get(), b.get(), c.get());
-        resolver.resolve((va, vb, vc)).await;
+        let (ra, rb, rc) = tokio::join!(a.get(), b.get(), c.get());
+        match (ra, rb, rc) {
+            (Ok(va), Ok(vb), Ok(vc)) => resolver.resolve((va, vb, vc)),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => resolver.reject(e),
+        }
     });
 
     out
 }
 
 /// Combines a vector of outputs into a single output of a vector.
+/// If any output is rejected, the combined output is rejected with that error.
 pub fn all<T>(outputs: Vec<Output<T>>) -> Output<Vec<T>>
 where
     T: Clone + Send + Sync + 'static,
@@ -308,9 +376,15 @@ where
     tokio::spawn(async move {
         let mut results = Vec::with_capacity(outputs.len());
         for o in &outputs {
-            results.push(o.get().await);
+            match o.get().await {
+                Ok(val) => results.push(val),
+                Err(e) => {
+                    resolver.reject(e);
+                    return;
+                }
+            }
         }
-        resolver.resolve(results).await;
+        resolver.resolve(results);
     });
 
     out
@@ -326,7 +400,7 @@ where
 
     tokio::spawn(async move {
         let val = fut.await;
-        resolver.resolve(val).await;
+        resolver.resolve(val);
     });
 
     out
@@ -339,32 +413,32 @@ mod tests {
     #[tokio::test]
     async fn test_output_new() {
         let out = Output::new(42);
-        assert_eq!(out.get().await, 42);
-        assert!(out.is_known().await);
-        assert!(!out.is_secret().await);
+        assert_eq!(out.get().await.unwrap(), 42);
+        assert!(out.is_known());
+        assert!(!out.is_secret());
     }
 
     #[tokio::test]
     async fn test_output_unresolved() {
         let (out, resolver) = Output::<i32>::unresolved();
         tokio::spawn(async move {
-            resolver.resolve(99).await;
+            resolver.resolve(99);
         });
-        assert_eq!(out.get().await, 99);
+        assert_eq!(out.get().await.unwrap(), 99);
     }
 
     #[tokio::test]
     async fn test_output_map() {
         let out = Output::new(10);
         let doubled = out.map(|v| v * 2);
-        assert_eq!(doubled.get().await, 20);
+        assert_eq!(doubled.get().await.unwrap(), 20);
     }
 
     #[tokio::test]
     async fn test_output_flat_map() {
         let out = Output::new(5);
         let result = out.flat_map(|v| Output::new(v + 100));
-        assert_eq!(result.get().await, 105);
+        assert_eq!(result.get().await.unwrap(), 105);
     }
 
     #[tokio::test]
@@ -373,7 +447,7 @@ mod tests {
         let b = Output::new(2);
         let c = Output::new(3);
         let combined = all(vec![a, b, c]);
-        assert_eq!(combined.get().await, vec![1, 2, 3]);
+        assert_eq!(combined.get().await.unwrap(), vec![1, 2, 3]);
     }
 
     #[tokio::test]
@@ -381,19 +455,64 @@ mod tests {
         let a = Output::new("hello".to_string());
         let b = Output::new(42);
         let combined = all2(&a, &b);
-        assert_eq!(combined.get().await, ("hello".to_string(), 42));
+        assert_eq!(combined.get().await.unwrap(), ("hello".to_string(), 42));
     }
 
     #[tokio::test]
     async fn test_secret_output() {
         let out = Output::secret(42);
-        assert!(out.is_secret().await);
-        assert_eq!(out.get().await, 42);
+        assert!(out.is_secret());
+        assert_eq!(out.get().await.unwrap(), 42);
     }
 
     #[tokio::test]
     async fn test_from_future() {
         let out = from_future(async { 42 });
-        assert_eq!(out.get().await, 42);
+        assert_eq!(out.get().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_reject() {
+        let (out, resolver) = Output::<i32>::unresolved();
+        resolver.reject(Error::Custom("something went wrong".into()));
+        let result = out.get().await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("something went wrong"));
+    }
+
+    #[tokio::test]
+    async fn test_reject_propagates_through_map() {
+        let (out, resolver) = Output::<i32>::unresolved();
+        let mapped = out.map(|v| v * 2);
+        resolver.reject(Error::Custom("upstream failed".into()));
+        let result = mapped.get().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("upstream failed"));
+    }
+
+    #[tokio::test]
+    async fn test_reject_propagates_through_all() {
+        let a = Output::new(1);
+        let (b, resolver) = Output::<i32>::unresolved();
+        let combined = all(vec![a, b]);
+        resolver.reject(Error::Custom("b failed".into()));
+        let result = combined.get().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("b failed"));
+    }
+
+    #[tokio::test]
+    async fn test_resolver_dropped_returns_error() {
+        let (out, resolver) = Output::<i32>::unresolved();
+        drop(resolver);
+        let result = out.get().await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("resolver dropped"));
     }
 }

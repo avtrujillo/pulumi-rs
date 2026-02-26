@@ -27,7 +27,7 @@
 //!
 //!     // Return stack exports
 //!     Ok(serde_json::json!({
-//!         "bucketUrn": urn.get().await,
+//!         "bucketUrn": urn.get().await?,
 //!     }))
 //! }
 //! ```
