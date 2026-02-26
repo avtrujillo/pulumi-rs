@@ -15,17 +15,20 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = Result<T, Arc<Error>>> + Send>>;
 /// `Output` because their values may depend on other resources that haven't been
 /// created yet, or may be unknown during `pulumi preview`.
 ///
+/// Beyond being a future that resolves to `Result<T>`, an `Output<T>` tracks:
+///
+/// - **Dependencies** — which resource URNs this value depends on
+/// - **Known status** — whether the value is known (false during preview for new resources)
+/// - **Secret status** — whether the value contains sensitive data
+///
 /// Outputs support combinators like [`Output::map`] and [`Output::flat_map`] to
-/// transform values while preserving dependency tracking.
+/// transform values while preserving this metadata.
 ///
 /// `Output<T>` implements [`IntoFuture`], so you can `.await` it directly:
 ///
 /// ```ignore
 /// let value: String = my_output.await?;
 /// ```
-///
-/// Since `Output<T>` is [`Clone`], awaiting it does not prevent further use —
-/// just clone first if you need the output again.
 #[derive(Clone)]
 pub struct Output<T: Clone + Send + Sync + 'static> {
     future: Shared<BoxFuture<T>>,
