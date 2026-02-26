@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::output::Output;
+use crate::output::ResourceOutput;
 use crate::proto::pulumirpc;
 use crate::serde::{json_to_struct, struct_to_json};
 
@@ -281,8 +281,8 @@ pub async fn read_resource(
 
 /// A builder for custom resources that wraps outputs ergonomically.
 ///
-/// This provides a higher-level API where inputs can be `Output<T>` values,
-/// and results are returned as `Output<T>` as well.
+/// This provides a higher-level API where results are returned as
+/// `ResourceOutput<T>` values.
 pub struct CustomResource {
     resource_type: String,
     name: String,
@@ -333,16 +333,16 @@ impl CustomResource {
 
     /// Registers the resource and returns outputs.
     ///
-    /// Returns `(urn, id, outputs)` as `Output` values.
+    /// Returns `(urn, id, outputs)` as `ResourceOutput` values.
     pub async fn register(
         self,
         ctx: &Context,
-    ) -> Result<(Output<String>, Output<String>, Output<serde_json::Value>)> {
+    ) -> Result<(ResourceOutput<String>, ResourceOutput<String>, ResourceOutput<serde_json::Value>)> {
         let result = register_resource(ctx, &self.resource_type, &self.name, self.inputs, &self.opts).await?;
 
-        let urn = Output::new(result.urn);
-        let id = Output::new(result.id);
-        let outputs = Output::new(result.outputs);
+        let urn = ResourceOutput::new(result.urn);
+        let id = ResourceOutput::new(result.id);
+        let outputs = ResourceOutput::new(result.outputs);
 
         Ok((urn, id, outputs))
     }
@@ -350,9 +350,9 @@ impl CustomResource {
 
 /// Helper to extract a string property from a JSON output.
 pub fn get_output_string(
-    outputs: &Output<serde_json::Value>,
+    outputs: &ResourceOutput<serde_json::Value>,
     key: &str,
-) -> Output<Option<String>> {
+) -> ResourceOutput<Option<String>> {
     let key = key.to_string();
     outputs.map(move |v| {
         v.as_object()

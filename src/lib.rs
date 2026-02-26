@@ -11,7 +11,7 @@
 //! setup.
 //!
 //! ```ignore
-//! use pulumi::{Context, Output, Result};
+//! use pulumi::{Context, ResourceOutput, Result};
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -44,7 +44,7 @@
 //!
 //! ## Core Types
 //!
-//! - [`Output<T>`] — A value that may not be known yet (the fundamental Pulumi type)
+//! - [`ResourceOutput<T>`] — A resource property that may not be known yet
 //! - [`Context`] — The Pulumi program context (gRPC connections + config)
 //! - [`resource::ResourceOptions`] — Options for resource registration
 //! - [`Error`] / [`Result`] — Error handling
@@ -70,7 +70,7 @@ pub(crate) mod proto {
 // Re-export core types at the crate root.
 pub use context::Context;
 pub use error::{Error, Result};
-pub use output::{all, all2, all3, from_future, Output};
+pub use output::{all, all2, all3, from_future, OutputData, ResourceOutput};
 pub use resource::{CustomResource, ResourceOptions};
 
 /// Runs a Pulumi program.
