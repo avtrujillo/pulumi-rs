@@ -1,9 +1,13 @@
-use std::future::Future;
+use std::future::{Future, IntoFuture};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use futures::future::{FutureExt, Shared};
 use tokio::sync::oneshot;
 
 use crate::error::Error;
+
+type BoxFuture<T> = Pin<Box<dyn Future<Output = Result<T, Arc<Error>>> + Send>>;
 
 /// Represents a value that may not yet be known.
 ///
@@ -13,126 +17,151 @@ use crate::error::Error;
 ///
 /// Outputs support combinators like [`Output::map`] and [`Output::flat_map`] to
 /// transform values while preserving dependency tracking.
+///
+/// `Output<T>` implements [`IntoFuture`], so you can `.await` it directly:
+///
+/// ```ignore
+/// let value: String = my_output.await?;
+/// ```
+///
+/// Since `Output<T>` is [`Clone`], awaiting it does not prevent further use —
+/// just clone first if you need the output again.
 #[derive(Clone)]
 pub struct Output<T: Clone + Send + Sync + 'static> {
-    inner: Arc<OutputInner<T>>,
+    future: Shared<BoxFuture<T>>,
+    meta: Arc<OutputMeta>,
 }
 
-struct OutputInner<T: Clone + Send + Sync + 'static> {
-    data: Mutex<OutputState<T>>,
-    /// URNs of resources this output depends on.
+struct OutputMeta {
     deps: Mutex<Vec<String>>,
-    /// Whether this output's value is known (false during preview for new resources).
     known: Mutex<bool>,
-    /// Whether this output contains a secret value.
     secret: Mutex<bool>,
 }
 
-enum OutputState<T> {
-    /// The value is pending resolution.
-    Pending(Vec<oneshot::Sender<Result<T, Arc<Error>>>>),
-    /// The value has been resolved successfully or with an error.
-    Resolved(Result<T, Arc<Error>>),
+impl OutputMeta {
+    fn new() -> Arc<Self> {
+        Arc::new(OutputMeta {
+            deps: Mutex::new(Vec::new()),
+            known: Mutex::new(true),
+            secret: Mutex::new(false),
+        })
+    }
+
+    fn new_unknown() -> Arc<Self> {
+        Arc::new(OutputMeta {
+            deps: Mutex::new(Vec::new()),
+            known: Mutex::new(false),
+            secret: Mutex::new(false),
+        })
+    }
+
+    fn new_secret() -> Arc<Self> {
+        Arc::new(OutputMeta {
+            deps: Mutex::new(Vec::new()),
+            known: Mutex::new(true),
+            secret: Mutex::new(true),
+        })
+    }
+
+    fn copy_from(other: &OutputMeta) -> Arc<Self> {
+        Arc::new(OutputMeta {
+            deps: Mutex::new(other.deps.lock().unwrap().clone()),
+            known: Mutex::new(*other.known.lock().unwrap()),
+            secret: Mutex::new(*other.secret.lock().unwrap()),
+        })
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> Output<T> {
     /// Creates a new output that is already resolved with the given value.
     pub fn new(value: T) -> Self {
         Output {
-            inner: Arc::new(OutputInner {
-                data: Mutex::new(OutputState::Resolved(Ok(value))),
-                deps: Mutex::new(Vec::new()),
-                known: Mutex::new(true),
-                secret: Mutex::new(false),
-            }),
+            future: futures::future::ready(Ok(value)).boxed().shared(),
+            meta: OutputMeta::new(),
         }
     }
 
     /// Creates an output pair: an unresolved output and a resolver to set its value.
     pub fn unresolved() -> (Self, OutputResolver<T>) {
-        let inner = Arc::new(OutputInner {
-            data: Mutex::new(OutputState::Pending(Vec::new())),
-            deps: Mutex::new(Vec::new()),
-            known: Mutex::new(true),
-            secret: Mutex::new(false),
-        });
+        let (tx, rx) = oneshot::channel();
+        let future = async move {
+            rx.await.unwrap_or_else(|_| {
+                Err(Arc::new(Error::Custom(
+                    "output resolver dropped without resolving".into(),
+                )))
+            })
+        }
+        .boxed()
+        .shared();
+
+        let meta = OutputMeta::new();
         let output = Output {
-            inner: inner.clone(),
+            future,
+            meta: meta.clone(),
         };
-        let resolver = OutputResolver { inner };
+        let resolver = OutputResolver {
+            sender: Some(tx),
+            meta,
+        };
         (output, resolver)
     }
 
     /// Creates an output whose value is unknown (used during preview).
     pub fn unknown() -> Self {
-        let inner = Arc::new(OutputInner {
-            data: Mutex::new(OutputState::Pending(Vec::new())),
-            deps: Mutex::new(Vec::new()),
-            known: Mutex::new(false),
-            secret: Mutex::new(false),
-        });
-        Output { inner }
+        // Unknown outputs never resolve — they represent values that
+        // can't be determined during preview.
+        let (_tx, rx) = oneshot::channel::<Result<T, Arc<Error>>>();
+        let future = async move {
+            rx.await.unwrap_or_else(|_| {
+                Err(Arc::new(Error::Custom("output value is unknown".into())))
+            })
+        }
+        .boxed()
+        .shared();
+
+        Output {
+            future,
+            meta: OutputMeta::new_unknown(),
+        }
     }
 
     /// Creates a secret output with the given value.
     pub fn secret(value: T) -> Self {
-        let inner = Arc::new(OutputInner {
-            data: Mutex::new(OutputState::Resolved(Ok(value))),
-            deps: Mutex::new(Vec::new()),
-            known: Mutex::new(true),
-            secret: Mutex::new(true),
-        });
-        Output { inner }
+        Output {
+            future: futures::future::ready(Ok(value)).boxed().shared(),
+            meta: OutputMeta::new_secret(),
+        }
     }
 
     /// Waits for this output to resolve and returns its value, or an error
     /// if the output was rejected or the resolver was dropped.
+    ///
+    /// This is equivalent to `.await` but works on `&self` without consuming
+    /// the output.
     pub async fn get(&self) -> crate::error::Result<T> {
-        // Fast path: check if already resolved.
-        {
-            let data = self.inner.data.lock().unwrap();
-            if let OutputState::Resolved(ref result) = *data {
-                return result
-                    .clone()
-                    .map_err(|arc| Error::Custom(arc.to_string()));
-            }
-        }
-
-        // Slow path: register a waiter.
-        let rx = {
-            let mut data = self.inner.data.lock().unwrap();
-            match *data {
-                OutputState::Resolved(ref result) => {
-                    return result
-                        .clone()
-                        .map_err(|arc| Error::Custom(arc.to_string()));
-                }
-                OutputState::Pending(ref mut waiters) => {
-                    let (tx, rx) = oneshot::channel();
-                    waiters.push(tx);
-                    rx
-                }
-            }
-        };
-
-        rx.await
-            .map_err(|_| Error::Custom("output resolver dropped without resolving".into()))?
+        self.future
+            .clone()
+            .await
             .map_err(|arc| Error::Custom(arc.to_string()))
     }
 
     /// Returns the URN dependencies of this output.
     pub fn dependencies(&self) -> Vec<String> {
-        self.inner.deps.lock().unwrap().clone()
+        self.inner_deps().lock().unwrap().clone()
     }
 
     /// Returns whether this output's value is known.
     pub fn is_known(&self) -> bool {
-        *self.inner.known.lock().unwrap()
+        *self.meta.known.lock().unwrap()
     }
 
     /// Returns whether this output is a secret.
     pub fn is_secret(&self) -> bool {
-        *self.inner.secret.lock().unwrap()
+        *self.meta.secret.lock().unwrap()
+    }
+
+    fn inner_deps(&self) -> &Mutex<Vec<String>> {
+        &self.meta.deps
     }
 
     /// Transforms the output value by applying `f` to it once resolved.
@@ -152,36 +181,19 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         U: Clone + Send + Sync + 'static,
         F: FnOnce(T) -> U + Send + 'static,
     {
-        let source = self.clone();
-        let (out, resolver) = Output::<U>::unresolved();
+        let source = self.future.clone();
+        let meta = OutputMeta::copy_from(&self.meta);
 
-        // Propagate metadata.
-        let out_inner = out.inner.clone();
-        let source_inner = self.inner.clone();
+        let future = async move {
+            match source.await {
+                Ok(val) => Ok(f(val)),
+                Err(e) => Err(e),
+            }
+        }
+        .boxed()
+        .shared();
 
-        tokio::spawn(async move {
-            // Copy deps/known/secret.
-            {
-                let source_deps = source_inner.deps.lock().unwrap();
-                let mut out_deps = out_inner.deps.lock().unwrap();
-                *out_deps = source_deps.clone();
-            }
-            {
-                let known = *source_inner.known.lock().unwrap();
-                *out_inner.known.lock().unwrap() = known;
-            }
-            {
-                let secret = *source_inner.secret.lock().unwrap();
-                *out_inner.secret.lock().unwrap() = secret;
-            }
-
-            match source.get().await {
-                Ok(val) => resolver.resolve(f(val)),
-                Err(e) => resolver.reject(e),
-            }
-        });
-
-        out
+        Output { future, meta }
     }
 
     /// Like [`map`](Output::map), but the function returns an `Output<U>`,
@@ -194,49 +206,30 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         U: Clone + Send + Sync + 'static,
         F: FnOnce(T) -> Output<U> + Send + 'static,
     {
-        let source = self.clone();
-        let (out, resolver) = Output::<U>::unresolved();
+        let source = self.future.clone();
+        let meta = OutputMeta::copy_from(&self.meta);
+        let out_meta = meta.clone();
 
-        let out_inner = out.inner.clone();
-        let source_inner = self.inner.clone();
-
-        tokio::spawn(async move {
-            // Copy deps from source.
-            {
-                let source_deps = source_inner.deps.lock().unwrap();
-                let mut out_deps = out_inner.deps.lock().unwrap();
-                *out_deps = source_deps.clone();
-            }
-            {
-                let known = *source_inner.known.lock().unwrap();
-                *out_inner.known.lock().unwrap() = known;
-            }
-            {
-                let secret = *source_inner.secret.lock().unwrap();
-                *out_inner.secret.lock().unwrap() = secret;
-            }
-
-            match source.get().await {
+        let future = async move {
+            match source.await {
                 Ok(val) => {
-                    let inner_output = f(val);
+                    let inner = f(val);
 
-                    // Also merge deps from the inner output.
+                    // Merge deps from the inner output.
                     {
-                        let inner_deps = inner_output.inner.deps.lock().unwrap();
-                        let mut out_deps = out_inner.deps.lock().unwrap();
-                        out_deps.extend(inner_deps.iter().cloned());
+                        let inner_deps = inner.meta.deps.lock().unwrap();
+                        out_meta.deps.lock().unwrap().extend(inner_deps.iter().cloned());
                     }
 
-                    match inner_output.get().await {
-                        Ok(inner_val) => resolver.resolve(inner_val),
-                        Err(e) => resolver.reject(e),
-                    }
+                    inner.future.await
                 }
-                Err(e) => resolver.reject(e),
+                Err(e) => Err(e),
             }
-        });
+        }
+        .boxed()
+        .shared();
 
-        out
+        Output { future, meta }
     }
 }
 
@@ -246,75 +239,67 @@ impl<T: Clone + Send + Sync + 'static> std::fmt::Debug for Output<T> {
     }
 }
 
+impl<T: Clone + Send + Sync + 'static> IntoFuture for Output<T> {
+    type Output = crate::error::Result<T>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            self.future
+                .await
+                .map_err(|arc| Error::Custom(arc.to_string()))
+        })
+    }
+}
+
 /// Resolves or rejects a pending [`Output`].
 ///
 /// If dropped without calling [`resolve`](OutputResolver::resolve) or
 /// [`reject`](OutputResolver::reject), the output is automatically rejected
 /// with an error indicating the resolver was dropped.
 pub struct OutputResolver<T: Clone + Send + Sync + 'static> {
-    inner: Arc<OutputInner<T>>,
+    sender: Option<oneshot::Sender<Result<T, Arc<Error>>>>,
+    meta: Arc<OutputMeta>,
 }
 
 impl<T: Clone + Send + Sync + 'static> OutputResolver<T> {
     /// Resolves the output with the given value, waking all waiters.
-    pub fn resolve(self, value: T) {
-        self.complete(Ok(value));
+    pub fn resolve(mut self, value: T) {
+        if let Some(tx) = self.sender.take() {
+            let _ = tx.send(Ok(value));
+        }
     }
 
     /// Rejects the output with an error, waking all waiters.
-    pub fn reject(self, error: Error) {
-        self.complete(Err(error));
-    }
-
-    fn complete(self, result: Result<T, Error>) {
-        // Use ManuallyDrop to prevent Drop from running after we complete.
-        let me = std::mem::ManuallyDrop::new(self);
-        Self::complete_inner(&me.inner, result);
-    }
-
-    fn complete_inner(inner: &Arc<OutputInner<T>>, result: Result<T, Error>) {
-        let arc_result = result.map_err(Arc::new);
-        let mut data = inner.data.lock().unwrap();
-        let waiters = match std::mem::replace(&mut *data, OutputState::Resolved(arc_result.clone()))
-        {
-            OutputState::Pending(waiters) => waiters,
-            OutputState::Resolved(_) => return,
-        };
-        for tx in waiters {
-            let _ = tx.send(arc_result.clone());
+    pub fn reject(mut self, error: Error) {
+        if let Some(tx) = self.sender.take() {
+            let _ = tx.send(Err(Arc::new(error)));
         }
     }
 
     /// Marks the output as unknown and resolves it with a default value.
     pub fn resolve_unknown(self, default: T) {
-        *self.inner.known.lock().unwrap() = false;
+        *self.meta.known.lock().unwrap() = false;
         self.resolve(default);
     }
 
     /// Adds dependency URNs to the output.
     pub fn add_deps(&self, deps: impl IntoIterator<Item = String>) {
-        let mut current = self.inner.deps.lock().unwrap();
-        current.extend(deps);
+        self.meta.deps.lock().unwrap().extend(deps);
     }
 
     /// Marks the output as containing a secret.
     pub fn set_secret(&self, secret: bool) {
-        *self.inner.secret.lock().unwrap() = secret;
+        *self.meta.secret.lock().unwrap() = secret;
     }
 }
 
 impl<T: Clone + Send + Sync + 'static> Drop for OutputResolver<T> {
     fn drop(&mut self) {
-        // If the resolver is dropped without resolving, reject with an error.
-        let data = self.inner.data.lock().unwrap();
-        if matches!(*data, OutputState::Pending(_)) {
-            drop(data);
-            Self::complete_inner(
-                &self.inner,
-                Err(Error::Custom(
-                    "output resolver dropped without resolving".into(),
-                )),
-            );
+        if let Some(tx) = self.sender.take() {
+            let _ = tx.send(Err(Arc::new(Error::Custom(
+                "output resolver dropped without resolving".into(),
+            ))));
         }
     }
 }
@@ -326,19 +311,23 @@ where
     A: Clone + Send + Sync + 'static,
     B: Clone + Send + Sync + 'static,
 {
-    let a = a.clone();
-    let b = b.clone();
-    let (out, resolver) = Output::<(A, B)>::unresolved();
+    let fa = a.future.clone();
+    let fb = b.future.clone();
 
-    tokio::spawn(async move {
-        let (ra, rb) = tokio::join!(a.get(), b.get());
+    let future = async move {
+        let (ra, rb) = tokio::join!(fa, fb);
         match (ra, rb) {
-            (Ok(va), Ok(vb)) => resolver.resolve((va, vb)),
-            (Err(e), _) | (_, Err(e)) => resolver.reject(e),
+            (Ok(va), Ok(vb)) => Ok((va, vb)),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         }
-    });
+    }
+    .boxed()
+    .shared();
 
-    out
+    Output {
+        future,
+        meta: OutputMeta::new(),
+    }
 }
 
 /// Combines three outputs into one.
@@ -349,20 +338,24 @@ where
     B: Clone + Send + Sync + 'static,
     C: Clone + Send + Sync + 'static,
 {
-    let a = a.clone();
-    let b = b.clone();
-    let c = c.clone();
-    let (out, resolver) = Output::<(A, B, C)>::unresolved();
+    let fa = a.future.clone();
+    let fb = b.future.clone();
+    let fc = c.future.clone();
 
-    tokio::spawn(async move {
-        let (ra, rb, rc) = tokio::join!(a.get(), b.get(), c.get());
+    let future = async move {
+        let (ra, rb, rc) = tokio::join!(fa, fb, fc);
         match (ra, rb, rc) {
-            (Ok(va), Ok(vb), Ok(vc)) => resolver.resolve((va, vb, vc)),
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => resolver.reject(e),
+            (Ok(va), Ok(vb), Ok(vc)) => Ok((va, vb, vc)),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
         }
-    });
+    }
+    .boxed()
+    .shared();
 
-    out
+    Output {
+        future,
+        meta: OutputMeta::new(),
+    }
 }
 
 /// Combines a vector of outputs into a single output of a vector.
@@ -371,23 +364,16 @@ pub fn all<T>(outputs: Vec<Output<T>>) -> Output<Vec<T>>
 where
     T: Clone + Send + Sync + 'static,
 {
-    let (out, resolver) = Output::<Vec<T>>::unresolved();
+    let futures: Vec<_> = outputs.iter().map(|o| o.future.clone()).collect();
 
-    tokio::spawn(async move {
-        let mut results = Vec::with_capacity(outputs.len());
-        for o in &outputs {
-            match o.get().await {
-                Ok(val) => results.push(val),
-                Err(e) => {
-                    resolver.reject(e);
-                    return;
-                }
-            }
-        }
-        resolver.resolve(results);
-    });
+    let future = async move { futures::future::try_join_all(futures).await }
+        .boxed()
+        .shared();
 
-    out
+    Output {
+        future,
+        meta: OutputMeta::new(),
+    }
 }
 
 /// Lifts an async function into an output.
@@ -396,14 +382,12 @@ where
     T: Clone + Send + Sync + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    let (out, resolver) = Output::<T>::unresolved();
+    let future = async move { Ok(fut.await) }.boxed().shared();
 
-    tokio::spawn(async move {
-        let val = fut.await;
-        resolver.resolve(val);
-    });
-
-    out
+    Output {
+        future,
+        meta: OutputMeta::new(),
+    }
 }
 
 #[cfg(test)]
@@ -425,6 +409,12 @@ mod tests {
             resolver.resolve(99);
         });
         assert_eq!(out.get().await.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn test_output_await() {
+        let out = Output::new(42);
+        assert_eq!(out.await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -514,5 +504,20 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("resolver dropped"));
+    }
+
+    #[tokio::test]
+    async fn test_get_multiple_times() {
+        let out = Output::new(42);
+        assert_eq!(out.get().await.unwrap(), 42);
+        assert_eq!(out.get().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_clone_and_await() {
+        let out = Output::new(42);
+        let out2 = out.clone();
+        assert_eq!(out.await.unwrap(), 42);
+        assert_eq!(out2.await.unwrap(), 42);
     }
 }
