@@ -98,11 +98,9 @@ A **resource** is anything managed by a cloud provider: a VM, a database, a DNS 
 
 There are three kinds of resources:
 
-| Kind | Trait | Builder | What it is |
-|------|-------|---------|------------|
-| Custom resource | `Resource` | `ResourceBuilder<R>` | A real cloud object managed by a provider plugin (S3 bucket, EC2 instance, etc.) |
-| Component resource | `ComponentResource` | `ComponentBuilder<C>` | A logical grouping you define to organize child resources (no cloud API call) |
-| Remote component | `RemoteComponent` | `RemoteComponentBuilder<R>` | A higher-level component implemented inside a provider plugin |
+- **Custom resource** (`Resource` / `ResourceBuilder<R>`) — A real cloud object managed by a provider plugin (S3 bucket, EC2 instance, etc.)
+- **Component resource** (`ComponentResource` / `ComponentBuilder<C>`) — A logical grouping you define to organize child resources (no cloud API call)
+- **Remote component** (`RemoteComponent` / `RemoteComponentBuilder<R>`) — A higher-level component implemented inside a provider plugin
 
 ### The `Resource` trait
 
