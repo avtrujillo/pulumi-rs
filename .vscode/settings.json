@@ -1,0 +1,4 @@
+{
+    "rust-analyzer.rustcSource": "discover",
+    "rust-analyzer.toolchain": "nightly-2026-03-03"
+}
