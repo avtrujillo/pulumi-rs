@@ -147,7 +147,7 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
 
     /// Returns the URN dependencies of this output.
     pub fn dependencies(&self) -> Vec<String> {
-        self.inner_deps().lock().unwrap().clone()
+        self.meta.deps.lock().unwrap().clone()
     }
 
     /// Returns whether this output's value is known.
@@ -158,10 +158,6 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
     /// Returns whether this output is a secret.
     pub fn is_secret(&self) -> bool {
         *self.meta.secret.lock().unwrap()
-    }
-
-    fn inner_deps(&self) -> &Mutex<Vec<String>> {
-        &self.meta.deps
     }
 
     /// Transforms the output value by applying `f` to it once resolved.
@@ -241,14 +237,14 @@ impl<T: Clone + Send + Sync + 'static> std::fmt::Debug for Output<T> {
 
 impl<T: Clone + Send + Sync + 'static> IntoFuture for Output<T> {
     type Output = crate::error::Result<T>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move {
+        async move {
             self.future
                 .await
                 .map_err(|arc| Error::Custom(arc.to_string()))
-        })
+        }
     }
 }
 
