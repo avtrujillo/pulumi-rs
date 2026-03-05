@@ -13,7 +13,23 @@
 //! setup.
 //!
 //! ```ignore
-//! use pulumi::{Context, Output, Result};
+//! use pulumi::{Context, Resource, ResourceBuilder, Result};
+//! use serde::{Deserialize, Serialize};
+//!
+//! // Define a resource at the type level.
+//! struct S3Bucket;
+//!
+//! impl Resource for S3Bucket {
+//!     const TYPE_TOKEN: &'static str = "aws:s3/bucket:Bucket";
+//!     type Inputs = S3BucketArgs;
+//!     type Outputs = S3BucketOutputs;
+//! }
+//!
+//! #[derive(Serialize)]
+//! struct S3BucketArgs { bucket: String }
+//!
+//! #[derive(Deserialize, Clone)]
+//! struct S3BucketOutputs { arn: String }
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -21,15 +37,12 @@
 //! }
 //!
 //! async fn my_stack(ctx: Context) -> pulumi::Result<serde_json::Value> {
-//!     // Register resources here using ctx
-//!     let (urn, id, outputs) = pulumi::CustomResource::new("aws:s3/bucket:Bucket", "my-bucket")
-//!         .inputs(serde_json::json!({ "bucket": "my-unique-bucket-name" }))
-//!         .register(&ctx)
-//!         .await?;
+//!     let bucket = ResourceBuilder::<S3Bucket>::new(&ctx, "my-bucket", S3BucketArgs {
+//!         bucket: "my-unique-bucket-name".into(),
+//!     }).await?;
 //!
-//!     // Return stack exports
 //!     Ok(serde_json::json!({
-//!         "bucketUrn": urn.get().await?,
+//!         "bucketArn": bucket.outputs.arn,
 //!     }))
 //! }
 //! ```
@@ -46,9 +59,12 @@
 //!
 //! ## Core Types
 //!
+//! - [`Resource`] — Trait that describes a cloud resource at the type level
+//! - [`ResourceBuilder`] — Builder to register a [`Resource`]; implements [`IntoFuture`](std::future::IntoFuture)
 //! - [`Output<T>`] — A value that may not be known yet (the fundamental Pulumi type)
 //! - [`Context`] — The Pulumi program context (gRPC connections + config)
-//! - [`resource::ResourceOptions`] — Options for resource registration
+//! - [`ProviderFunction`] — Trait that describes a provider function at the type level
+//! - [`InvokeBuilder`] — Builder to invoke a [`ProviderFunction`]; implements [`IntoFuture`](std::future::IntoFuture)
 //! - [`Error`] / [`Result`] — Error handling
 
 pub mod context;
@@ -72,10 +88,10 @@ pub(crate) mod proto {
 // Re-export core types at the crate root.
 pub use context::Context;
 pub use error::{Error, Result};
-pub use invoke::{InvokeBuilder, ProviderFunction};
+pub use invoke::{CallBuilder, CallResult, ComponentMethod, InvokeBuilder, InvokeOptions, ProviderFunction};
 pub use output::{all, all2, all3, from_future, Output};
 pub use resource::{
-    ComponentBuilder, ComponentResource, CustomResource, RegisteredComponent,
+    ComponentBuilder, ComponentResource, ReadBuilder, RegisteredComponent,
     RegisteredRemoteComponent, RegisteredResource, RemoteComponent, RemoteComponentBuilder,
     Resource, ResourceBuilder, ResourceOptions,
 };

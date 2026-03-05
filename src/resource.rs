@@ -6,7 +6,6 @@ use ::serde::Serialize;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::output::Output;
 use crate::proto::pulumirpc;
 use crate::serde::{json_to_struct, struct_to_json};
 
@@ -39,16 +38,12 @@ pub struct ResourceOptions {
     pub import_id: Option<String>,
 }
 
-/// The result of registering a resource.
+/// Internal result of registering a resource (untyped JSON).
 #[derive(Debug, Clone)]
-pub struct ResourceResult {
-    /// The URN assigned by the engine.
+pub(crate) struct ResourceResult {
     pub urn: String,
-    /// The provider-assigned ID (empty for component resources).
     pub id: String,
-    /// The resolved output properties as JSON.
     pub outputs: serde_json::Value,
-    /// Per-property dependency information.
     pub property_deps: HashMap<String, Vec<String>>,
 }
 
@@ -64,6 +59,14 @@ pub struct ResourceResult {
 /// so creating a resource is as simple as:
 ///
 /// ```ignore
+/// struct S3Bucket;
+///
+/// impl Resource for S3Bucket {
+///     const TYPE_TOKEN: &'static str = "aws:s3/bucket:Bucket";
+///     type Inputs = S3BucketArgs;
+///     type Outputs = S3BucketOutputs;
+/// }
+///
 /// let bucket = ResourceBuilder::<S3Bucket>::new(&ctx, "my-bucket", S3BucketArgs {
 ///     bucket: "my-unique-name".into(),
 /// }).await?;
@@ -91,7 +94,8 @@ pub trait Resource: Sized + Send + 'static {
 
 /// A registered resource with typed output properties.
 ///
-/// This is what you get back when you `.await` a [`ResourceBuilder`].
+/// This is what you get back when you `.await` a [`ResourceBuilder`] or
+/// [`ReadBuilder`].
 #[derive(Debug, Clone)]
 pub struct RegisteredResource<R: Resource> {
     /// The URN assigned by the Pulumi engine.
@@ -228,6 +232,90 @@ impl<R: Resource> IntoFuture for ResourceBuilder<R> {
                 false,
             )
             .await?;
+            let outputs: R::Outputs = serde_json::from_value(result.outputs)?;
+            Ok(RegisteredResource {
+                urn: result.urn,
+                id: result.id,
+                outputs,
+                property_deps: result.property_deps,
+            })
+        }
+    }
+}
+
+/// A builder for reading an existing cloud resource into Pulumi state.
+///
+/// Like [`ResourceBuilder`], implements [`IntoFuture`] with an unboxed future.
+///
+/// # Example
+///
+/// ```ignore
+/// let existing = ReadBuilder::<S3Bucket>::new(&ctx, "imported-bucket", "bucket-id-123")
+///     .await?;
+/// ```
+pub struct ReadBuilder<R: Resource> {
+    ctx: Context,
+    name: String,
+    id: String,
+    props: serde_json::Value,
+    opts: ResourceOptions,
+    _marker: std::marker::PhantomData<R>,
+}
+
+impl<R: Resource> ReadBuilder<R> {
+    /// Creates a new read builder for a resource of type `R`.
+    ///
+    /// `id` is the existing cloud provider ID of the resource to import.
+    pub fn new(ctx: &Context, name: impl Into<String>, id: impl Into<String>) -> Self {
+        ReadBuilder {
+            ctx: ctx.clone(),
+            name: name.into(),
+            id: id.into(),
+            props: serde_json::Value::Object(Default::default()),
+            opts: ResourceOptions {
+                version: R::VERSION.to_string(),
+                plugin_download_url: R::PLUGIN_DOWNLOAD_URL.to_string(),
+                ..Default::default()
+            },
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Sets known properties of the existing resource.
+    pub fn props(mut self, props: serde_json::Value) -> Self {
+        self.props = props;
+        self
+    }
+
+    /// Sets the parent resource URN.
+    pub fn parent(mut self, urn: impl Into<String>) -> Self {
+        self.opts.parent = Some(urn.into());
+        self
+    }
+
+    /// Sets the explicit provider reference.
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.opts.provider = Some(provider.into());
+        self
+    }
+
+    /// Adds a dependency on another resource.
+    pub fn depends_on(mut self, urn: impl Into<String>) -> Self {
+        self.opts.depends_on.push(urn.into());
+        self
+    }
+}
+
+/// `ReadBuilder<R>` can be `.await`ed directly.
+impl<R: Resource> IntoFuture for ReadBuilder<R> {
+    type Output = Result<RegisteredResource<R>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let result =
+                read_resource_inner(&self.ctx, R::TYPE_TOKEN, &self.name, &self.id, self.props, &self.opts)
+                    .await?;
             let outputs: R::Outputs = serde_json::from_value(result.outputs)?;
             Ok(RegisteredResource {
                 urn: result.urn,
@@ -449,68 +537,11 @@ impl<R: RemoteComponent> IntoFuture for RemoteComponentBuilder<R> {
     }
 }
 
-/// Registers a custom resource with the Pulumi engine.
-///
-/// Custom resources are managed by a cloud provider plugin (e.g. AWS, GCP).
-///
-/// # Arguments
-///
-/// * `ctx` - The Pulumi context.
-/// * `resource_type` - The type token (e.g. `"aws:s3/bucket:Bucket"`).
-/// * `name` - The logical name of the resource.
-/// * `inputs` - The input properties as a JSON value.
-/// * `opts` - Resource options.
-///
-/// # Returns
-///
-/// A [`ResourceResult`] containing the URN, ID, and output properties.
-pub async fn register_resource(
-    ctx: &Context,
-    resource_type: &str,
-    name: &str,
-    inputs: serde_json::Value,
-    opts: &ResourceOptions,
-) -> Result<ResourceResult> {
-    register_resource_inner(ctx, resource_type, name, inputs, opts, true, false).await
-}
+// ---------------------------------------------------------------------------
+// Internal registration functions (used by builders and stack.rs)
+// ---------------------------------------------------------------------------
 
-/// Registers a component resource with the Pulumi engine.
-///
-/// Component resources are logical groupings that don't directly correspond to
-/// a cloud resource. They serve as parents for other resources.
-pub async fn register_component_resource(
-    ctx: &Context,
-    resource_type: &str,
-    name: &str,
-    opts: &ResourceOptions,
-) -> Result<ResourceResult> {
-    register_resource_inner(
-        ctx,
-        resource_type,
-        name,
-        serde_json::Value::Object(Default::default()),
-        opts,
-        false,
-        false,
-    )
-    .await
-}
-
-/// Registers a remote component resource.
-///
-/// Remote components are implemented by a provider plugin rather than in the
-/// current program.
-pub async fn register_remote_component(
-    ctx: &Context,
-    resource_type: &str,
-    name: &str,
-    inputs: serde_json::Value,
-    opts: &ResourceOptions,
-) -> Result<ResourceResult> {
-    register_resource_inner(ctx, resource_type, name, inputs, opts, false, true).await
-}
-
-async fn register_resource_inner(
+pub(crate) async fn register_resource_inner(
     ctx: &Context,
     resource_type: &str,
     name: &str,
@@ -521,15 +552,7 @@ async fn register_resource_inner(
 ) -> Result<ResourceResult> {
     let object = json_to_struct(&inputs);
 
-    let parent = opts
-        .parent
-        .clone()
-        .or_else(|| {
-            // If no parent is specified, we won't set one here;
-            // the engine will use the root stack.
-            None
-        })
-        .unwrap_or_default();
+    let parent = opts.parent.clone().unwrap_or_default();
 
     let req = pulumirpc::RegisterResourceRequest {
         r#type: resource_type.to_string(),
@@ -605,11 +628,7 @@ async fn register_resource_inner(
     })
 }
 
-/// Registers the outputs of a component resource.
-///
-/// This should be called after all child resources of a component have been
-/// registered, to signal that the component's outputs are ready.
-pub async fn register_resource_outputs(
+pub(crate) async fn register_resource_outputs(
     ctx: &Context,
     urn: &str,
     outputs: serde_json::Value,
@@ -627,10 +646,7 @@ pub async fn register_resource_outputs(
     Ok(())
 }
 
-/// Reads an existing resource from the cloud provider.
-///
-/// This is used to import existing cloud resources into Pulumi's state.
-pub async fn read_resource(
+async fn read_resource_inner(
     ctx: &Context,
     resource_type: &str,
     name: &str,
@@ -677,88 +693,5 @@ pub async fn read_resource(
         id: id.to_string(),
         outputs,
         property_deps: HashMap::new(),
-    })
-}
-
-/// A builder for custom resources that wraps outputs ergonomically.
-///
-/// This provides a higher-level API where inputs can be `Output<T>` values,
-/// and results are returned as `Output<T>` as well.
-pub struct CustomResource {
-    resource_type: String,
-    name: String,
-    inputs: serde_json::Value,
-    opts: ResourceOptions,
-}
-
-impl CustomResource {
-    /// Creates a new custom resource builder.
-    pub fn new(resource_type: &str, name: &str) -> Self {
-        CustomResource {
-            resource_type: resource_type.to_string(),
-            name: name.to_string(),
-            inputs: serde_json::Value::Object(Default::default()),
-            opts: ResourceOptions::default(),
-        }
-    }
-
-    /// Sets the input properties.
-    pub fn inputs(mut self, inputs: serde_json::Value) -> Self {
-        self.inputs = inputs;
-        self
-    }
-
-    /// Sets resource options.
-    pub fn options(mut self, opts: ResourceOptions) -> Self {
-        self.opts = opts;
-        self
-    }
-
-    /// Sets the parent resource.
-    pub fn parent(mut self, urn: impl Into<String>) -> Self {
-        self.opts.parent = Some(urn.into());
-        self
-    }
-
-    /// Sets the provider.
-    pub fn provider(mut self, provider: impl Into<String>) -> Self {
-        self.opts.provider = Some(provider.into());
-        self
-    }
-
-    /// Adds a dependency.
-    pub fn depends_on(mut self, urn: impl Into<String>) -> Self {
-        self.opts.depends_on.push(urn.into());
-        self
-    }
-
-    /// Registers the resource and returns outputs.
-    ///
-    /// Returns `(urn, id, outputs)` as `Output` values.
-    pub async fn register(
-        self,
-        ctx: &Context,
-    ) -> Result<(Output<String>, Output<String>, Output<serde_json::Value>)> {
-        let result = register_resource(ctx, &self.resource_type, &self.name, self.inputs, &self.opts).await?;
-
-        let urn = Output::new(result.urn);
-        let id = Output::new(result.id);
-        let outputs = Output::new(result.outputs);
-
-        Ok((urn, id, outputs))
-    }
-}
-
-/// Helper to extract a string property from a JSON output.
-pub fn get_output_string(
-    outputs: &Output<serde_json::Value>,
-    key: &str,
-) -> Output<Option<String>> {
-    let key = key.to_string();
-    outputs.map(move |v: serde_json::Value| {
-        v.as_object()
-            .and_then(|m| m.get(&key))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
     })
 }
