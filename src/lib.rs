@@ -1,3 +1,5 @@
+#![feature(impl_trait_in_assoc_type)]
+
 //! # Pulumi SDK for Rust
 //!
 //! This crate provides a native Rust SDK for [Pulumi](https://www.pulumi.com),
