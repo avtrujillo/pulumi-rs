@@ -403,18 +403,30 @@ The SDK uses Rust's type system to eliminate an entire class of errors that plag
 
 ### Why nightly?
 
-This SDK requires the nightly-only feature `impl_trait_in_assoc_type` ([tracking issue](https://github.com/rust-lang/rust/issues/63063)). Here's the problem it solves.
+This SDK requires the nightly-only feature `impl_trait_in_assoc_type` ([tracking issue](https://github.com/rust-lang/rust/issues/63063)). The reason comes down to a gap in stable Rust's type system around async and associated types.
 
-Rust's `IntoFuture` trait requires you to specify the future type as an associated type:
+We want builders you can `.await` directly:
 
 ```rust
-impl IntoFuture for ResourceBuilder<R> {
+let bucket = ResourceBuilder::<S3Bucket>::new(&ctx, "my-bucket", args).await?;
+```
+
+The `.await` syntax on non-futures works via the `IntoFuture` trait, which requires you to declare the future as an associated type:
+
+```rust
+impl<R: Resource> IntoFuture for ResourceBuilder<R> {
     type Output = Result<RegisteredResource<R>>;
     type IntoFuture = /* what goes here? */;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            // serialize inputs, make gRPC call, deserialize outputs...
+        }
+    }
 }
 ```
 
-The `into_future` method contains an `async` block that does gRPC calls, serialization, and deserialization. The compiler generates an anonymous type for that `async` block — but there's no way to name it. On stable Rust, you have two options, and neither is good:
+The `into_future` body is an `async` block. The compiler generates an anonymous, unnameable type for it — so you can't write it in the `type IntoFuture = ...` position. On stable Rust, you have two workarounds:
 
 **Option A: Box the future.** Erase the type behind `Pin<Box<dyn Future>>`:
 
@@ -422,9 +434,9 @@ The `into_future` method contains an `async` block that does gRPC calls, seriali
 type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 ```
 
-This works, but every `.await` on a builder now heap-allocates. In a Pulumi program that creates hundreds of resources, that's hundreds of unnecessary allocations — and the `dyn` dispatch makes inlining impossible.
+This compiles, but now every builder carries a vtable pointer and dynamic dispatch where a direct call would do. It's not about heap allocation — tokio already heap-allocates the top-level task — it's that you've made the future opaque to the compiler. It can't inline the async state machine into the parent future, so you end up with an extra indirection per `.await` for no semantic reason.
 
-**Option B: Don't use `IntoFuture`.** Add an explicit `.execute()` or `.send()` method that returns `impl Future`. This avoids the associated type problem entirely, but it means you can't write the natural `builder.await` syntax — you'd need `builder.execute().await` everywhere.
+**Option B: Don't use `IntoFuture`.** Add an explicit `.execute()` method that returns `impl Future` (which *is* allowed in return position on stable). This avoids the associated type problem, but now every call site is `builder.execute().await` instead of `builder.await` — noisy, and surprising to anyone who expects `.await` to just work on an async-flavored builder.
 
 The `impl_trait_in_assoc_type` feature lets us write:
 
@@ -432,7 +444,7 @@ The `impl_trait_in_assoc_type` feature lets us write:
 type IntoFuture = impl Future<Output = Self::Output> + Send;
 ```
 
-The compiler fills in the real anonymous `async` block type. No boxing, no indirection, no extra method — just `.await` a builder and the future runs inline. The SDK uses this in seven `IntoFuture` impls (`Output<T>`, `ResourceBuilder`, `ReadBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `InvokeBuilder`, `CallBuilder`), so the savings compound across an entire program.
+The compiler fills in the concrete async block type. No boxing, no extra method — just `.await` a builder and it works. The SDK uses this in seven `IntoFuture` impls (`Output<T>`, `ResourceBuilder`, `ReadBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `InvokeBuilder`, `CallBuilder`).
 
 ## Project structure
 
