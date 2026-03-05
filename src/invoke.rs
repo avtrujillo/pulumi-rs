@@ -9,17 +9,6 @@ use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
 use crate::serde::{json_to_struct, struct_to_json};
 
-/// Options for invoking a provider function.
-#[derive(Debug, Clone, Default)]
-pub struct InvokeOptions {
-    /// An optional provider reference.
-    pub provider: Option<String>,
-    /// The version of the provider to use.
-    pub version: String,
-    /// The plugin download URL.
-    pub plugin_download_url: String,
-}
-
 // ---------------------------------------------------------------------------
 // Type-driven invocation traits (leveraging impl_trait_in_assoc_type)
 // ---------------------------------------------------------------------------
@@ -57,6 +46,17 @@ pub trait ProviderFunction: Sized + Send + 'static {
 
     /// The return type. Must be deserializable from JSON.
     type Returns: DeserializeOwned + Send + 'static;
+}
+
+/// Options for invoking a provider function.
+#[derive(Debug, Clone, Default)]
+pub struct InvokeOptions {
+    /// An optional provider reference.
+    pub provider: Option<String>,
+    /// The version of the provider to use.
+    pub version: String,
+    /// The plugin download URL.
+    pub plugin_download_url: String,
 }
 
 /// A builder for invoking a strongly-typed provider function.
@@ -106,28 +106,123 @@ impl<F: ProviderFunction> IntoFuture for InvokeBuilder<F> {
     fn into_future(self) -> Self::IntoFuture {
         async move {
             let args_json = serde_json::to_value(&self.args)?;
-            let result = invoke(&self.ctx, F::TOKEN, args_json, &self.opts).await?;
+            let result = invoke_inner(&self.ctx, F::TOKEN, args_json, &self.opts).await?;
             Ok(serde_json::from_value(result)?)
         }
     }
 }
 
-/// Invokes a provider function and returns the result.
+/// Describes a method on a remote component resource at the type level.
 ///
-/// Provider functions are things like `aws:index/getAmi:getAmi` that query
-/// data from the cloud without creating resources.
+/// Component methods are like [`ProviderFunction`]s but support dependency
+/// tracking on both inputs and outputs.
 ///
-/// # Arguments
+/// ```ignore
+/// struct MyComponentDoThing;
 ///
-/// * `ctx` - The Pulumi context.
-/// * `token` - The function token (e.g. `"aws:index/getAmi:getAmi"`).
-/// * `args` - The function arguments as a JSON value.
-/// * `opts` - Invoke options.
+/// impl ComponentMethod for MyComponentDoThing {
+///     const TOKEN: &'static str = "my:module:MyComponent/doThing";
+///     type Args = DoThingArgs;
+///     type Returns = DoThingResult;
+/// }
 ///
-/// # Returns
+/// let result = CallBuilder::<MyComponentDoThing>::new(&ctx, args).await?;
+/// ```
+pub trait ComponentMethod: Sized + Send + 'static {
+    /// The method token (e.g. `"my:module:MyComponent/doThing"`).
+    const TOKEN: &'static str;
+
+    /// The provider plugin version.
+    const VERSION: &'static str = "";
+
+    /// The plugin download URL.
+    const PLUGIN_DOWNLOAD_URL: &'static str = "";
+
+    /// The argument type.
+    type Args: Serialize + Send + 'static;
+
+    /// The return type.
+    type Returns: DeserializeOwned + Send + 'static;
+}
+
+/// The result of calling a component method, including return dependencies.
+#[derive(Debug)]
+pub struct CallResult<M: ComponentMethod> {
+    /// The typed return value.
+    pub result: M::Returns,
+    /// Per-property dependency URNs on the return value.
+    pub return_deps: HashMap<String, Vec<String>>,
+}
+
+/// A builder for calling a component method with dependency tracking.
 ///
-/// The function's return value as JSON.
-pub async fn invoke(
+/// Implements [`IntoFuture`] using `impl_trait_in_assoc_type`.
+pub struct CallBuilder<M: ComponentMethod> {
+    ctx: Context,
+    args: M::Args,
+    arg_deps: HashMap<String, Vec<String>>,
+    opts: InvokeOptions,
+    _marker: std::marker::PhantomData<M>,
+}
+
+impl<M: ComponentMethod> CallBuilder<M> {
+    /// Creates a new call builder for method `M`.
+    pub fn new(ctx: &Context, args: M::Args) -> Self {
+        CallBuilder {
+            ctx: ctx.clone(),
+            args,
+            arg_deps: HashMap::new(),
+            opts: InvokeOptions {
+                version: M::VERSION.to_string(),
+                plugin_download_url: M::PLUGIN_DOWNLOAD_URL.to_string(),
+                ..Default::default()
+            },
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Sets dependency URNs for a specific argument property.
+    pub fn arg_dep(mut self, property: impl Into<String>, deps: Vec<String>) -> Self {
+        self.arg_deps.insert(property.into(), deps);
+        self
+    }
+
+    /// Sets all argument dependencies at once.
+    pub fn arg_deps(mut self, deps: HashMap<String, Vec<String>>) -> Self {
+        self.arg_deps = deps;
+        self
+    }
+
+    /// Sets the explicit provider reference.
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.opts.provider = Some(provider.into());
+        self
+    }
+}
+
+/// `CallBuilder<M>` can be `.await`ed directly.
+impl<M: ComponentMethod> IntoFuture for CallBuilder<M> {
+    type Output = Result<CallResult<M>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let (json_result, return_deps) =
+                call_inner(&self.ctx, M::TOKEN, self.args, self.arg_deps, &self.opts).await?;
+            let result: M::Returns = serde_json::from_value(json_result)?;
+            Ok(CallResult {
+                result,
+                return_deps,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal gRPC functions (used by builders)
+// ---------------------------------------------------------------------------
+
+async fn invoke_inner(
     ctx: &Context,
     token: &str,
     args: serde_json::Value,
@@ -175,18 +270,15 @@ pub async fn invoke(
     Ok(result)
 }
 
-/// Calls a provider method (for component resources that expose methods).
-///
-/// This is a higher-level operation than `invoke` — it supports dependency
-/// tracking on both inputs and outputs.
-pub async fn call(
+async fn call_inner<A: Serialize + Send>(
     ctx: &Context,
     token: &str,
-    args: serde_json::Value,
+    args: A,
     arg_deps: HashMap<String, Vec<String>>,
     opts: &InvokeOptions,
 ) -> Result<(serde_json::Value, HashMap<String, Vec<String>>)> {
-    let args_struct = json_to_struct(&args);
+    let args_json = serde_json::to_value(&args)?;
+    let args_struct = json_to_struct(&args_json);
 
     let arg_dependencies = arg_deps
         .into_iter()
