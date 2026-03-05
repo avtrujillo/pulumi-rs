@@ -376,15 +376,13 @@ pulumi::log::debug(&ctx, "detailed trace info").await?;
 
 All operations return `pulumi::Result<T>`, which uses the `pulumi::Error` enum:
 
-| Variant | When it happens |
-|---------|-----------------|
-| `Transport(tonic::transport::Error)` | gRPC connection failure |
-| `Rpc(tonic::Status)` | Engine/monitor returned an error |
-| `MissingEnv(&'static str)` | Required `PULUMI_*` env var not set |
-| `Serde(serde_json::Error)` | Serialization/deserialization failed |
-| `ResourceFailed { urn }` | Provider reported resource creation failure |
-| `InvokeFailure { token, failures }` | Provider function returned check failures |
-| `Custom(String)` | Anything else |
+- `Transport(tonic::transport::Error)` — gRPC connection failure
+- `Rpc(tonic::Status)` — Engine/monitor returned an error
+- `MissingEnv(&'static str)` — Required `PULUMI_*` env var not set
+- `Serde(serde_json::Error)` — Serialization/deserialization failed
+- `ResourceFailed { urn }` — Provider reported resource creation failure
+- `InvokeFailure { token, failures }` — Provider function returned check failures
+- `Custom(String)` — Anything else
 
 ## How the type system works (design notes)
 
