@@ -72,8 +72,13 @@ pub(crate) mod proto {
 // Re-export core types at the crate root.
 pub use context::Context;
 pub use error::{Error, Result};
+pub use invoke::{InvokeBuilder, ProviderFunction};
 pub use output::{all, all2, all3, from_future, Output};
-pub use resource::{CustomResource, ResourceOptions};
+pub use resource::{
+    ComponentBuilder, ComponentResource, CustomResource, RegisteredComponent,
+    RegisteredRemoteComponent, RegisteredResource, RemoteComponent, RemoteComponentBuilder,
+    Resource, ResourceBuilder, ResourceOptions,
+};
 
 /// Runs a Pulumi program.
 ///

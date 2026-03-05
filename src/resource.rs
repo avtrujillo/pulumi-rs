@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+use std::future::{Future, IntoFuture};
+
+use ::serde::de::DeserializeOwned;
+use ::serde::Serialize;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -46,6 +50,403 @@ pub struct ResourceResult {
     pub outputs: serde_json::Value,
     /// Per-property dependency information.
     pub property_deps: HashMap<String, Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// Type-driven resource traits (leveraging impl_trait_in_assoc_type)
+// ---------------------------------------------------------------------------
+
+/// Describes a Pulumi custom resource at the type level.
+///
+/// Implementors declare the resource's type token, provider metadata, and
+/// strongly-typed input/output property types. Registration is handled
+/// generically by [`ResourceBuilder`], which implements [`IntoFuture`] —
+/// so creating a resource is as simple as:
+///
+/// ```ignore
+/// let bucket = ResourceBuilder::<S3Bucket>::new(&ctx, "my-bucket", S3BucketArgs {
+///     bucket: "my-unique-name".into(),
+/// }).await?;
+///
+/// println!("ARN: {}", bucket.outputs.arn);
+/// ```
+pub trait Resource: Sized + Send + 'static {
+    /// The Pulumi type token (e.g. `"aws:s3/bucket:Bucket"`).
+    const TYPE_TOKEN: &'static str;
+
+    /// The provider plugin version to use when registering this resource.
+    const VERSION: &'static str = "";
+
+    /// The download URL for the provider plugin.
+    const PLUGIN_DOWNLOAD_URL: &'static str = "";
+
+    /// The input properties type. Must be serializable to JSON so that
+    /// the SDK can send it over gRPC.
+    type Inputs: Serialize + Send + 'static;
+
+    /// The output properties type returned by the provider after the
+    /// resource has been created or updated.
+    type Outputs: DeserializeOwned + Clone + Send + Sync + 'static;
+}
+
+/// A registered resource with typed output properties.
+///
+/// This is what you get back when you `.await` a [`ResourceBuilder`].
+#[derive(Debug, Clone)]
+pub struct RegisteredResource<R: Resource> {
+    /// The URN assigned by the Pulumi engine.
+    pub urn: String,
+    /// The provider-assigned ID (empty during preview).
+    pub id: String,
+    /// The typed output properties deserialized from the provider response.
+    pub outputs: R::Outputs,
+    /// Per-property dependency URNs.
+    pub property_deps: HashMap<String, Vec<String>>,
+}
+
+/// A builder for registering a strongly-typed resource.
+///
+/// Implements [`IntoFuture`] using `impl_trait_in_assoc_type`, so it can be
+/// `.await`ed directly without boxing the future. The builder captures all
+/// registration parameters and performs the gRPC call when awaited.
+///
+/// # Example
+///
+/// ```ignore
+/// let bucket = ResourceBuilder::<S3Bucket>::new(&ctx, "my-bucket", args)
+///     .parent(parent_urn)
+///     .protect()
+///     .await?;
+/// ```
+pub struct ResourceBuilder<R: Resource> {
+    ctx: Context,
+    name: String,
+    inputs: R::Inputs,
+    opts: ResourceOptions,
+    _marker: std::marker::PhantomData<R>,
+}
+
+impl<R: Resource> ResourceBuilder<R> {
+    /// Creates a new builder for a resource of type `R`.
+    pub fn new(ctx: &Context, name: impl Into<String>, inputs: R::Inputs) -> Self {
+        ResourceBuilder {
+            ctx: ctx.clone(),
+            name: name.into(),
+            inputs,
+            opts: ResourceOptions {
+                version: R::VERSION.to_string(),
+                plugin_download_url: R::PLUGIN_DOWNLOAD_URL.to_string(),
+                ..Default::default()
+            },
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Overrides all resource options at once.
+    pub fn options(mut self, opts: ResourceOptions) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    /// Sets the parent resource URN.
+    pub fn parent(mut self, urn: impl Into<String>) -> Self {
+        self.opts.parent = Some(urn.into());
+        self
+    }
+
+    /// Sets the explicit provider reference.
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.opts.provider = Some(provider.into());
+        self
+    }
+
+    /// Adds a dependency on another resource.
+    pub fn depends_on(mut self, urn: impl Into<String>) -> Self {
+        self.opts.depends_on.push(urn.into());
+        self
+    }
+
+    /// Marks the resource as protected from deletion.
+    pub fn protect(mut self) -> Self {
+        self.opts.protect = true;
+        self
+    }
+
+    /// Marks properties that should be treated as secrets.
+    pub fn additional_secret_outputs(mut self, props: Vec<String>) -> Self {
+        self.opts.additional_secret_outputs = props;
+        self
+    }
+
+    /// Enables delete-before-replace behavior.
+    pub fn delete_before_replace(mut self) -> Self {
+        self.opts.delete_before_replace = true;
+        self
+    }
+
+    /// Sets an existing cloud resource ID to import.
+    pub fn import_id(mut self, id: impl Into<String>) -> Self {
+        self.opts.import_id = Some(id.into());
+        self
+    }
+
+    /// Sets properties to ignore during updates.
+    pub fn ignore_changes(mut self, props: Vec<String>) -> Self {
+        self.opts.ignore_changes = props;
+        self
+    }
+
+    /// Sets properties that trigger replacement when changed.
+    pub fn replace_on_changes(mut self, props: Vec<String>) -> Self {
+        self.opts.replace_on_changes = props;
+        self
+    }
+
+    /// Retains the resource in the cloud when it is deleted from the program.
+    pub fn retain_on_delete(mut self) -> Self {
+        self.opts.retain_on_delete = true;
+        self
+    }
+}
+
+/// `ResourceBuilder<R>` can be `.await`ed directly. The future type is an
+/// opaque `impl Future` — no heap allocation for the future itself.
+impl<R: Resource> IntoFuture for ResourceBuilder<R> {
+    type Output = Result<RegisteredResource<R>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let inputs_json = serde_json::to_value(&self.inputs)?;
+            let result = register_resource_inner(
+                &self.ctx,
+                R::TYPE_TOKEN,
+                &self.name,
+                inputs_json,
+                &self.opts,
+                true,
+                false,
+            )
+            .await?;
+            let outputs: R::Outputs = serde_json::from_value(result.outputs)?;
+            Ok(RegisteredResource {
+                urn: result.urn,
+                id: result.id,
+                outputs,
+                property_deps: result.property_deps,
+            })
+        }
+    }
+}
+
+/// Describes a Pulumi component resource at the type level.
+///
+/// Component resources are logical groupings — they don't correspond to a
+/// physical cloud resource but serve as parents for other resources.
+///
+/// Use [`ComponentBuilder`] to register a component and get back a
+/// [`RegisteredComponent`].
+pub trait ComponentResource: Sized + Send + 'static {
+    /// The Pulumi type token (e.g. `"my:module:MyComponent"`).
+    const TYPE_TOKEN: &'static str;
+}
+
+/// A registered component resource.
+#[derive(Debug, Clone)]
+pub struct RegisteredComponent<C: ComponentResource> {
+    /// The URN assigned by the Pulumi engine.
+    pub urn: String,
+    _marker: std::marker::PhantomData<C>,
+}
+
+impl<C: ComponentResource> RegisteredComponent<C> {
+    /// Returns the URN of this component.
+    pub fn urn(&self) -> &str {
+        &self.urn
+    }
+
+    /// Registers the final outputs for this component resource.
+    pub async fn register_outputs(
+        &self,
+        ctx: &Context,
+        outputs: serde_json::Value,
+    ) -> Result<()> {
+        register_resource_outputs(ctx, &self.urn, outputs).await
+    }
+}
+
+/// A builder for registering a component resource.
+pub struct ComponentBuilder<C: ComponentResource> {
+    ctx: Context,
+    name: String,
+    opts: ResourceOptions,
+    _marker: std::marker::PhantomData<C>,
+}
+
+impl<C: ComponentResource> ComponentBuilder<C> {
+    /// Creates a new component builder.
+    pub fn new(ctx: &Context, name: impl Into<String>) -> Self {
+        ComponentBuilder {
+            ctx: ctx.clone(),
+            name: name.into(),
+            opts: ResourceOptions::default(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Overrides all resource options at once.
+    pub fn options(mut self, opts: ResourceOptions) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    /// Sets the parent resource URN.
+    pub fn parent(mut self, urn: impl Into<String>) -> Self {
+        self.opts.parent = Some(urn.into());
+        self
+    }
+
+    /// Marks the component as protected from deletion.
+    pub fn protect(mut self) -> Self {
+        self.opts.protect = true;
+        self
+    }
+}
+
+/// `ComponentBuilder<C>` can be `.await`ed directly.
+impl<C: ComponentResource> IntoFuture for ComponentBuilder<C> {
+    type Output = Result<RegisteredComponent<C>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let result = register_resource_inner(
+                &self.ctx,
+                C::TYPE_TOKEN,
+                &self.name,
+                serde_json::Value::Object(Default::default()),
+                &self.opts,
+                false,
+                false,
+            )
+            .await?;
+            Ok(RegisteredComponent {
+                urn: result.urn,
+                _marker: std::marker::PhantomData,
+            })
+        }
+    }
+}
+
+/// Describes a remote component resource at the type level.
+///
+/// Remote components are implemented by a provider plugin. They accept
+/// typed inputs and produce typed outputs, like [`Resource`], but are
+/// registered as non-custom remote resources.
+pub trait RemoteComponent: Sized + Send + 'static {
+    /// The Pulumi type token.
+    const TYPE_TOKEN: &'static str;
+
+    /// The provider plugin version.
+    const VERSION: &'static str = "";
+
+    /// The plugin download URL.
+    const PLUGIN_DOWNLOAD_URL: &'static str = "";
+
+    /// The input properties type.
+    type Inputs: Serialize + Send + 'static;
+
+    /// The output properties type.
+    type Outputs: DeserializeOwned + Clone + Send + Sync + 'static;
+}
+
+/// A registered remote component with typed outputs.
+#[derive(Debug, Clone)]
+pub struct RegisteredRemoteComponent<R: RemoteComponent> {
+    /// The URN assigned by the Pulumi engine.
+    pub urn: String,
+    /// The typed output properties.
+    pub outputs: R::Outputs,
+    /// Per-property dependency URNs.
+    pub property_deps: HashMap<String, Vec<String>>,
+}
+
+/// A builder for registering a remote component resource.
+pub struct RemoteComponentBuilder<R: RemoteComponent> {
+    ctx: Context,
+    name: String,
+    inputs: R::Inputs,
+    opts: ResourceOptions,
+    _marker: std::marker::PhantomData<R>,
+}
+
+impl<R: RemoteComponent> RemoteComponentBuilder<R> {
+    /// Creates a new remote component builder.
+    pub fn new(ctx: &Context, name: impl Into<String>, inputs: R::Inputs) -> Self {
+        RemoteComponentBuilder {
+            ctx: ctx.clone(),
+            name: name.into(),
+            inputs,
+            opts: ResourceOptions {
+                version: R::VERSION.to_string(),
+                plugin_download_url: R::PLUGIN_DOWNLOAD_URL.to_string(),
+                ..Default::default()
+            },
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Overrides all resource options at once.
+    pub fn options(mut self, opts: ResourceOptions) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    /// Sets the parent resource URN.
+    pub fn parent(mut self, urn: impl Into<String>) -> Self {
+        self.opts.parent = Some(urn.into());
+        self
+    }
+
+    /// Sets the explicit provider reference.
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.opts.provider = Some(provider.into());
+        self
+    }
+
+    /// Adds a dependency on another resource.
+    pub fn depends_on(mut self, urn: impl Into<String>) -> Self {
+        self.opts.depends_on.push(urn.into());
+        self
+    }
+}
+
+/// `RemoteComponentBuilder<R>` can be `.await`ed directly.
+impl<R: RemoteComponent> IntoFuture for RemoteComponentBuilder<R> {
+    type Output = Result<RegisteredRemoteComponent<R>>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let inputs_json = serde_json::to_value(&self.inputs)?;
+            let result = register_resource_inner(
+                &self.ctx,
+                R::TYPE_TOKEN,
+                &self.name,
+                inputs_json,
+                &self.opts,
+                false,
+                true,
+            )
+            .await?;
+            let outputs: R::Outputs = serde_json::from_value(result.outputs)?;
+            Ok(RegisteredRemoteComponent {
+                urn: result.urn,
+                outputs,
+                property_deps: result.property_deps,
+            })
+        }
+    }
 }
 
 /// Registers a custom resource with the Pulumi engine.
@@ -354,7 +755,7 @@ pub fn get_output_string(
     key: &str,
 ) -> Output<Option<String>> {
     let key = key.to_string();
-    outputs.map(move |v| {
+    outputs.map(move |v: serde_json::Value| {
         v.as_object()
             .and_then(|m| m.get(&key))
             .and_then(|v| v.as_str())

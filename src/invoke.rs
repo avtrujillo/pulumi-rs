@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+use std::future::{Future, IntoFuture};
+
+use ::serde::de::DeserializeOwned;
+use ::serde::Serialize;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -14,6 +18,98 @@ pub struct InvokeOptions {
     pub version: String,
     /// The plugin download URL.
     pub plugin_download_url: String,
+}
+
+// ---------------------------------------------------------------------------
+// Type-driven invocation traits (leveraging impl_trait_in_assoc_type)
+// ---------------------------------------------------------------------------
+
+/// Describes a Pulumi provider function at the type level.
+///
+/// Implementors declare the function token, provider metadata, and
+/// strongly-typed argument/return types. Invocation is handled
+/// generically by [`InvokeBuilder`], which implements [`IntoFuture`]:
+///
+/// ```ignore
+/// struct GetAmi;
+///
+/// impl ProviderFunction for GetAmi {
+///     const TOKEN: &'static str = "aws:index/getAmi:getAmi";
+///     type Args = GetAmiArgs;
+///     type Returns = GetAmiResult;
+/// }
+///
+/// let ami = InvokeBuilder::<GetAmi>::new(&ctx, GetAmiArgs { ... }).await?;
+/// println!("AMI ID: {}", ami.id);
+/// ```
+pub trait ProviderFunction: Sized + Send + 'static {
+    /// The function token (e.g. `"aws:index/getAmi:getAmi"`).
+    const TOKEN: &'static str;
+
+    /// The provider plugin version.
+    const VERSION: &'static str = "";
+
+    /// The plugin download URL.
+    const PLUGIN_DOWNLOAD_URL: &'static str = "";
+
+    /// The argument type. Must be serializable to JSON.
+    type Args: Serialize + Send + 'static;
+
+    /// The return type. Must be deserializable from JSON.
+    type Returns: DeserializeOwned + Send + 'static;
+}
+
+/// A builder for invoking a strongly-typed provider function.
+///
+/// Implements [`IntoFuture`] using `impl_trait_in_assoc_type`, so it can be
+/// `.await`ed directly without boxing the future.
+pub struct InvokeBuilder<F: ProviderFunction> {
+    ctx: Context,
+    args: F::Args,
+    opts: InvokeOptions,
+    _marker: std::marker::PhantomData<F>,
+}
+
+impl<F: ProviderFunction> InvokeBuilder<F> {
+    /// Creates a new invoke builder for function `F`.
+    pub fn new(ctx: &Context, args: F::Args) -> Self {
+        InvokeBuilder {
+            ctx: ctx.clone(),
+            args,
+            opts: InvokeOptions {
+                version: F::VERSION.to_string(),
+                plugin_download_url: F::PLUGIN_DOWNLOAD_URL.to_string(),
+                ..Default::default()
+            },
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Overrides all invoke options at once.
+    pub fn options(mut self, opts: InvokeOptions) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    /// Sets the explicit provider reference.
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.opts.provider = Some(provider.into());
+        self
+    }
+}
+
+/// `InvokeBuilder<F>` can be `.await`ed directly.
+impl<F: ProviderFunction> IntoFuture for InvokeBuilder<F> {
+    type Output = Result<F::Returns>;
+    type IntoFuture = impl Future<Output = Self::Output> + Send;
+
+    fn into_future(self) -> Self::IntoFuture {
+        async move {
+            let args_json = serde_json::to_value(&self.args)?;
+            let result = invoke(&self.ctx, F::TOKEN, args_json, &self.opts).await?;
+            Ok(serde_json::from_value(result)?)
+        }
+    }
 }
 
 /// Invokes a provider function and returns the result.
