@@ -18,7 +18,7 @@ This SDK is the Rust side of that conversation. It speaks gRPC to the Pulumi eng
 
 ## Requirements
 
-- **Rust nightly** — this SDK uses `#![feature(impl_trait_in_assoc_type)]` for zero-cost async builders
+- **Rust nightly** — required for the `impl_trait_in_assoc_type` feature (see [why nightly?](#why-nightly))
 - **Pulumi CLI** — install from [pulumi.com/docs/install](https://www.pulumi.com/docs/install/)
 - **A cloud provider plugin** — e.g. `pulumi plugin install resource aws`
 
@@ -397,9 +397,42 @@ The SDK uses Rust's type system to eliminate an entire class of errors that plag
 - You get autocomplete on output fields instead of stringly-typed property access
 - Refactoring a field name is a compiler error, not a runtime surprise
 
-**`IntoFuture` builders.** Every builder (`ResourceBuilder`, `ReadBuilder`, `InvokeBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `CallBuilder`) implements `IntoFuture`. This means you can `.await` the builder directly — no `.build().execute()` ceremony. The `impl_trait_in_assoc_type` feature allows these futures to be concrete (not boxed), so there's zero heap allocation for the future itself.
+**`IntoFuture` builders.** Every builder (`ResourceBuilder`, `ReadBuilder`, `InvokeBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `CallBuilder`) implements `IntoFuture`. This means you can `.await` the builder directly — no `.build().execute()` ceremony.
 
 **Constants for metadata.** Type tokens, versions, and download URLs are `const` — they're baked into the binary at compile time and automatically threaded through the builders. You declare them once on the trait impl and never think about them again.
+
+### Why nightly?
+
+This SDK requires the nightly-only feature `impl_trait_in_assoc_type` ([tracking issue](https://github.com/rust-lang/rust/issues/63063)). Here's the problem it solves.
+
+Rust's `IntoFuture` trait requires you to specify the future type as an associated type:
+
+```rust
+impl IntoFuture for ResourceBuilder<R> {
+    type Output = Result<RegisteredResource<R>>;
+    type IntoFuture = /* what goes here? */;
+}
+```
+
+The `into_future` method contains an `async` block that does gRPC calls, serialization, and deserialization. The compiler generates an anonymous type for that `async` block — but there's no way to name it. On stable Rust, you have two options, and neither is good:
+
+**Option A: Box the future.** Erase the type behind `Pin<Box<dyn Future>>`:
+
+```rust
+type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+```
+
+This works, but every `.await` on a builder now heap-allocates. In a Pulumi program that creates hundreds of resources, that's hundreds of unnecessary allocations — and the `dyn` dispatch makes inlining impossible.
+
+**Option B: Don't use `IntoFuture`.** Add an explicit `.execute()` or `.send()` method that returns `impl Future`. This avoids the associated type problem entirely, but it means you can't write the natural `builder.await` syntax — you'd need `builder.execute().await` everywhere.
+
+The `impl_trait_in_assoc_type` feature lets us write:
+
+```rust
+type IntoFuture = impl Future<Output = Self::Output> + Send;
+```
+
+The compiler fills in the real anonymous `async` block type. No boxing, no indirection, no extra method — just `.await` a builder and the future runs inline. The SDK uses this in seven `IntoFuture` impls (`Output<T>`, `ResourceBuilder`, `ReadBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `InvokeBuilder`, `CallBuilder`), so the savings compound across an entire program.
 
 ## Project structure
 
