@@ -15,7 +15,9 @@ cargo clippy         # Lint
 cargo test <name>    # Run a single test by name
 ```
 
-Protobuf client stubs are generated at build time by `build.rs` using `tonic-build`. No server code is generated.
+**Requires Rust nightly** (pinned in `rust-toolchain.toml`) — the crate uses `#![feature(impl_trait_in_assoc_type)]` for zero-cost builder futures.
+
+Protobuf client stubs are generated at build time by `build.rs` using `tonic-build`. No server code is generated. All tests are inline (`#[cfg(test)]` modules in `output.rs` and `serde.rs`).
 
 ## Architecture
 
@@ -30,8 +32,8 @@ The SDK entry point is `pulumi::run(program)` in `lib.rs`, which:
 
 - **`output.rs`** — `Output<T>`, the core Pulumi type representing potentially-unknown, potentially-secret async values. Wraps `Shared<BoxFuture<T>>` with dependency/secret/known metadata. Supports `map`, `flat_map`, `all`, `all2`, `all3` combinators. `OutputResolver` resolves or rejects pending outputs (auto-rejects on drop).
 - **`context.rs`** — `Context` holds gRPC clients (`ResourceMonitorClient`, `EngineClient`) behind `Arc<Mutex<>>`. `Settings` parses all `PULUMI_*` env vars. Provides config access via `get_config()`/`require_config()`.
-- **`resource.rs`** — `CustomResource` builder for registering resources. Also exposes `register_component_resource()`, `register_remote_component()`, `read_resource()`, `register_resource_outputs()`. Registration returns `(Output<urn>, Output<id>, Output<outputs>)`.
-- **`invoke.rs`** — `invoke()` calls read-only provider functions; `call()` invokes component methods with dependency tracking.
+- **`resource.rs`** — Type-driven resource registration via traits (`Resource`, `ComponentResource`, `RemoteComponent`) and builders (`ResourceBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`, `ReadBuilder`). Each trait defines `TYPE_TOKEN`, `Inputs` (Serialize), and `Outputs` (Deserialize+Clone). Builders implement `IntoFuture` for ergonomic `.await` usage, returning typed `RegisteredResource`/`RegisteredComponent` structs with `urn`, `id`, and `outputs` fields as `Output<T>`.
+- **`invoke.rs`** — Type-driven provider function invocation via traits (`ProviderFunction`, `ComponentMethod`) and builders (`InvokeBuilder`, `CallBuilder`). Same pattern as resources: traits define token/input/output types, builders implement `IntoFuture`.
 - **`serde.rs`** — Bidirectional JSON ↔ Protobuf Struct conversion. Handles Pulumi wire format for secrets (magic key `4dabf18193072939515e22adb298388d`) and unknowns (sentinel UUID `04da6b54-80e4-46f7-96ec-b56ff0331ba9`).
 - **`error.rs`** — `Error` enum with variants for transport, RPC, missing env, serde, resource failure, invoke failure, and custom errors.
 - **`log.rs`** — `debug()`, `info()`, `warn()`, `error()`, `status()` send log messages to the Pulumi engine.
@@ -44,6 +46,7 @@ Located in `proto/pulumi/`. Key services: `ResourceMonitor` (resource.proto) for
 ## Conventions
 
 - Rust edition 2024; all public APIs are async (Tokio runtime)
+- Type-driven API: resources and provider functions are defined as marker types implementing traits (`Resource`, `ProviderFunction`, etc.) with associated `Inputs`/`Outputs` types, then used via builders that implement `IntoFuture`
 - `Output<T>` implements `IntoFuture` so it can be `.await`ed directly
 - Thread safety via `Arc<Mutex<>>` on shared state
 - Doctests are disabled (`doctest = false` in Cargo.toml)
