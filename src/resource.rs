@@ -146,9 +146,16 @@ impl<R: Resource> ResourceBuilder<R> {
         }
     }
 
-    /// Overrides all resource options at once.
+    /// Overrides resource options, preserving the provider version and download URL
+    /// from the `Resource` trait unless explicitly set in `opts`.
     pub fn options(mut self, opts: ResourceOptions) -> Self {
         self.opts = opts;
+        if self.opts.version.is_empty() {
+            self.opts.version = R::VERSION.to_string();
+        }
+        if self.opts.plugin_download_url.is_empty() {
+            self.opts.plugin_download_url = R::PLUGIN_DOWNLOAD_URL.to_string();
+        }
         self
     }
 
@@ -484,9 +491,16 @@ impl<R: RemoteComponent> RemoteComponentBuilder<R> {
         }
     }
 
-    /// Overrides all resource options at once.
+    /// Overrides resource options, preserving the provider version and download URL
+    /// from the `RemoteComponent` trait unless explicitly set in `opts`.
     pub fn options(mut self, opts: ResourceOptions) -> Self {
         self.opts = opts;
+        if self.opts.version.is_empty() {
+            self.opts.version = R::VERSION.to_string();
+        }
+        if self.opts.plugin_download_url.is_empty() {
+            self.opts.plugin_download_url = R::PLUGIN_DOWNLOAD_URL.to_string();
+        }
         self
     }
 

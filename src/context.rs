@@ -178,6 +178,11 @@ impl Context {
         self.inner.lock().await.root_urn.clone()
     }
 
+    /// Sets the root resource URN (called after stack registration).
+    pub(crate) async fn set_root_urn(&self, urn: String) {
+        self.inner.lock().await.root_urn = Some(urn);
+    }
+
     /// Returns a clone of the resource monitor client for internal use.
     pub(crate) async fn monitor(
         &self,
