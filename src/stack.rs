@@ -20,13 +20,14 @@ pub(crate) async fn register_stack(ctx: &Context) -> Result<String> {
     )
     .await?;
 
-    // Set the root resource URN in the engine.
+    // Set the root resource URN in the engine and context.
     let mut engine = ctx.engine().await;
     engine
         .set_root_resource(crate::proto::pulumirpc::SetRootResourceRequest {
             urn: result.urn.clone(),
         })
         .await?;
+    ctx.set_root_urn(result.urn.clone()).await;
 
     Ok(result.urn)
 }
