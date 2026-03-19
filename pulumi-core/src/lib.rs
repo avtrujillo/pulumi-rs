@@ -74,6 +74,7 @@ pub mod log;
 pub mod output;
 pub mod resource;
 pub mod stack;
+pub mod stack_reference;
 pub mod transform;
 
 pub(crate) mod serde;
@@ -96,6 +97,7 @@ pub use resource::{
     ReadBuilder, RegisteredComponent, RegisteredRemoteComponent, RegisteredResource,
     RemoteComponent, RemoteComponentBuilder, Resource, ResourceBuilder, ResourceOptions,
 };
+pub use stack_reference::{StackReference, StackReferenceBuilder};
 pub use transform::{register_stack_transform, TransformArgs, TransformFn, TransformResult};
 
 /// Runs a Pulumi program.
