@@ -13,6 +13,8 @@ This is a Cargo workspace. Crates:
 - **`pulumi-core`** — Core SDK: gRPC client, `Output<T>`, resource/invoke builders, serde, logging.
 - **`pulumi-macros`** — Proc-macro crate: `#[derive(Resource)]`, `#[derive(ComponentResource)]`, `#[derive(ProviderFunction)]`.
 - **`pulumi`** — Public-facing crate that re-exports `pulumi-core`. Enable `macros` feature to get derive macros.
+- **`pulumi-automation`** — Automation API: drive stack operations (`up`, `preview`, `destroy`, `refresh`) programmatically by wrapping the Pulumi CLI.
+- **`pulumi-cli`** — Rust-native CLI for Pulumi stack operations, built on `pulumi-automation`.
 
 ## Build Commands
 

@@ -1,0 +1,16 @@
+[package]
+name = "pulumi-cli"
+version = "0.1.0"
+edition = "2024"
+description = "CLI wrapper for Pulumi operations, built on pulumi-automation"
+license = "Apache-2.0"
+
+[dependencies]
+pulumi-automation = { path = "../pulumi-automation" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+
+[[bin]]
+name = "pulumi-rs"
+path = "src/main.rs"
