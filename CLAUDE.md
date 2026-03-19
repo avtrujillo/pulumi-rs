@@ -11,6 +11,7 @@ Native Rust SDK for [Pulumi](https://www.pulumi.com/) infrastructure-as-code. Co
 This is a Cargo workspace. Crates:
 
 - **`pulumi-core`** — Core SDK: gRPC client, `Output<T>`, resource/invoke builders, serde, logging.
+- **`pulumi`** — Public-facing crate that re-exports `pulumi-core`. Users depend on this.
 
 ## Build Commands
 

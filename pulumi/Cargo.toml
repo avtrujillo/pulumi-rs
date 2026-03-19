@@ -1,0 +1,12 @@
+[package]
+name = "pulumi"
+version = "0.1.0"
+edition = "2024"
+description = "Pulumi SDK for Rust — define cloud infrastructure as Rust code"
+license = "Apache-2.0"
+
+[dependencies]
+pulumi-core = { path = "../pulumi-core" }
+
+[lib]
+doctest = false
