@@ -675,6 +675,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulumi"
+version = "0.1.0"
+dependencies = [
+ "pulumi-core",
+]
+
+[[package]]
 name = "pulumi-core"
 version = "0.1.0"
 dependencies = [
