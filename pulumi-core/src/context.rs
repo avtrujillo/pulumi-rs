@@ -69,6 +69,104 @@ impl Settings {
     }
 }
 
+impl Settings {
+    /// Gets a configuration value by key.
+    pub fn get_config(&self, key: &str) -> Option<&str> {
+        self.config.get(key).map(String::as_str)
+    }
+
+    /// Gets a required configuration value, returning an error if missing.
+    pub fn require_config(&self, key: &str) -> Result<&str> {
+        self.get_config(key)
+            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+    }
+
+    /// Gets a configuration value as a `bool`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// is not `"true"` or `"false"`.
+    pub fn get_config_bool(&self, key: &str) -> Result<Option<bool>> {
+        match self.get_config(key) {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(v) => Err(Error::Custom(format!(
+                "config {key}: expected \"true\" or \"false\", got {v:?}"
+            ))),
+        }
+    }
+
+    /// Gets a required configuration value as a `bool`.
+    pub fn require_config_bool(&self, key: &str) -> Result<bool> {
+        self.get_config_bool(key)?
+            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+    }
+
+    /// Gets a configuration value as an `i64`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as an integer.
+    pub fn get_config_int(&self, key: &str) -> Result<Option<i64>> {
+        match self.get_config(key) {
+            None => Ok(None),
+            Some(v) => v
+                .parse::<i64>()
+                .map(Some)
+                .map_err(|_| Error::Custom(format!("config {key}: expected integer, got {v:?}"))),
+        }
+    }
+
+    /// Gets a required configuration value as an `i64`.
+    pub fn require_config_int(&self, key: &str) -> Result<i64> {
+        self.get_config_int(key)?
+            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+    }
+
+    /// Gets a configuration value as an `f64`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as a floating-point number.
+    pub fn get_config_float(&self, key: &str) -> Result<Option<f64>> {
+        match self.get_config(key) {
+            None => Ok(None),
+            Some(v) => v
+                .parse::<f64>()
+                .map(Some)
+                .map_err(|_| Error::Custom(format!("config {key}: expected number, got {v:?}"))),
+        }
+    }
+
+    /// Gets a required configuration value as an `f64`.
+    pub fn require_config_float(&self, key: &str) -> Result<f64> {
+        self.get_config_float(key)?
+            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+    }
+
+    /// Gets a configuration value deserialized as a JSON object of type `T`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as JSON or deserialized into `T`.
+    pub fn get_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        match self.get_config(key) {
+            None => Ok(None),
+            Some(v) => serde_json::from_str(v)
+                .map(Some)
+                .map_err(|e| Error::Custom(format!("config {key}: {e}"))),
+        }
+    }
+
+    /// Gets a required configuration value deserialized as a JSON object of type `T`.
+    pub fn require_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<T> {
+        self.get_config_object(key)?
+            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+    }
+
+    /// Returns whether a configuration value is secret.
+    pub fn is_config_secret(&self, key: &str) -> bool {
+        self.config_secret_keys.contains(&key.to_string())
+    }
+}
+
 fn parse_config(raw: &str) -> HashMap<String, String> {
     if raw.is_empty() {
         return HashMap::new();
@@ -164,13 +262,69 @@ impl Context {
     ///
     /// The key should be in the form `namespace:key`, e.g. `"aws:region"`.
     pub fn get_config(&self, key: &str) -> Option<&str> {
-        self.settings.config.get(key).map(String::as_str)
+        self.settings.get_config(key)
     }
 
     /// Gets a required configuration value, returning an error if missing.
     pub fn require_config(&self, key: &str) -> Result<&str> {
-        self.get_config(key)
-            .ok_or_else(|| Error::Custom(format!("missing required config: {key}")))
+        self.settings.require_config(key)
+    }
+
+    /// Gets a configuration value as a `bool`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// is not `"true"` or `"false"`.
+    pub fn get_config_bool(&self, key: &str) -> Result<Option<bool>> {
+        self.settings.get_config_bool(key)
+    }
+
+    /// Gets a required configuration value as a `bool`.
+    pub fn require_config_bool(&self, key: &str) -> Result<bool> {
+        self.settings.require_config_bool(key)
+    }
+
+    /// Gets a configuration value as an `i64`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as an integer.
+    pub fn get_config_int(&self, key: &str) -> Result<Option<i64>> {
+        self.settings.get_config_int(key)
+    }
+
+    /// Gets a required configuration value as an `i64`.
+    pub fn require_config_int(&self, key: &str) -> Result<i64> {
+        self.settings.require_config_int(key)
+    }
+
+    /// Gets a configuration value as an `f64`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as a floating-point number.
+    pub fn get_config_float(&self, key: &str) -> Result<Option<f64>> {
+        self.settings.get_config_float(key)
+    }
+
+    /// Gets a required configuration value as an `f64`.
+    pub fn require_config_float(&self, key: &str) -> Result<f64> {
+        self.settings.require_config_float(key)
+    }
+
+    /// Gets a configuration value deserialized as a JSON object of type `T`.
+    ///
+    /// Returns `None` if the key is missing. Returns an error if the value
+    /// cannot be parsed as JSON or deserialized into `T`.
+    pub fn get_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        self.settings.get_config_object(key)
+    }
+
+    /// Gets a required configuration value deserialized as a JSON object of type `T`.
+    pub fn require_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<T> {
+        self.settings.require_config_object(key)
+    }
+
+    /// Returns whether a configuration value is secret.
+    pub fn is_config_secret(&self, key: &str) -> bool {
+        self.settings.is_config_secret(key)
     }
 
     /// Returns the URN of the root stack resource, if known.
@@ -213,4 +367,111 @@ fn to_endpoint(addr: &str) -> Result<tonic::transport::Endpoint> {
     tonic::transport::Endpoint::from_shared(uri).map_err(|e| {
         Error::Custom(format!("invalid endpoint address: {e}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_settings(config: HashMap<String, String>) -> Settings {
+        Settings {
+            monitor_addr: String::new(),
+            engine_addr: String::new(),
+            project: "test".into(),
+            stack: "dev".into(),
+            dry_run: false,
+            parallel: -1,
+            organization: String::new(),
+            config_secret_keys: vec!["app:secret".into()],
+            config,
+        }
+    }
+
+    #[test]
+    fn test_get_config_missing() {
+        let s = test_settings(HashMap::new());
+        assert_eq!(s.get_config("app:missing"), None);
+    }
+
+    #[test]
+    fn test_get_config_string() {
+        let s = test_settings(HashMap::from([("app:region".into(), "us-east-1".into())]));
+        assert_eq!(s.get_config("app:region"), Some("us-east-1"));
+    }
+
+    #[test]
+    fn test_require_config_missing() {
+        let s = test_settings(HashMap::new());
+        assert!(s.require_config("app:missing").is_err());
+    }
+
+    #[test]
+    fn test_get_config_bool() {
+        let s = test_settings(HashMap::from([
+            ("app:enabled".into(), "true".into()),
+            ("app:disabled".into(), "false".into()),
+            ("app:bad".into(), "yes".into()),
+        ]));
+        assert_eq!(s.get_config_bool("app:enabled").unwrap(), Some(true));
+        assert_eq!(s.get_config_bool("app:disabled").unwrap(), Some(false));
+        assert_eq!(s.get_config_bool("app:missing").unwrap(), None);
+        assert!(s.get_config_bool("app:bad").is_err());
+    }
+
+    #[test]
+    fn test_get_config_int() {
+        let s = test_settings(HashMap::from([
+            ("app:count".into(), "42".into()),
+            ("app:negative".into(), "-7".into()),
+            ("app:bad".into(), "abc".into()),
+        ]));
+        assert_eq!(s.get_config_int("app:count").unwrap(), Some(42));
+        assert_eq!(s.get_config_int("app:negative").unwrap(), Some(-7));
+        assert_eq!(s.get_config_int("app:missing").unwrap(), None);
+        assert!(s.get_config_int("app:bad").is_err());
+    }
+
+    #[test]
+    fn test_get_config_float() {
+        let s = test_settings(HashMap::from([
+            ("app:rate".into(), "3.14".into()),
+            ("app:bad".into(), "abc".into()),
+        ]));
+        assert!((s.get_config_float("app:rate").unwrap().unwrap() - 3.14).abs() < f64::EPSILON);
+        assert_eq!(s.get_config_float("app:missing").unwrap(), None);
+        assert!(s.get_config_float("app:bad").is_err());
+    }
+
+    #[test]
+    fn test_get_config_object() {
+        let s = test_settings(HashMap::from([(
+            "app:tags".into(),
+            r#"{"env":"prod","team":"infra"}"#.into(),
+        )]));
+        let tags: HashMap<String, String> = s.get_config_object("app:tags").unwrap().unwrap();
+        assert_eq!(tags.get("env").unwrap(), "prod");
+        assert_eq!(tags.get("team").unwrap(), "infra");
+        assert_eq!(s.get_config_object::<HashMap<String, String>>("app:missing").unwrap(), None);
+    }
+
+    #[test]
+    fn test_is_config_secret() {
+        let s = test_settings(HashMap::from([("app:secret".into(), "hunter2".into())]));
+        assert!(s.is_config_secret("app:secret"));
+        assert!(!s.is_config_secret("app:region"));
+    }
+
+    #[test]
+    fn test_require_config_bool() {
+        let s = test_settings(HashMap::from([("app:flag".into(), "true".into())]));
+        assert_eq!(s.require_config_bool("app:flag").unwrap(), true);
+        assert!(s.require_config_bool("app:missing").is_err());
+    }
+
+    #[test]
+    fn test_require_config_int() {
+        let s = test_settings(HashMap::from([("app:port".into(), "8080".into())]));
+        assert_eq!(s.require_config_int("app:port").unwrap(), 8080);
+        assert!(s.require_config_int("app:missing").is_err());
+    }
 }
