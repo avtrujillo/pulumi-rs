@@ -5,8 +5,12 @@ edition = "2024"
 description = "Pulumi SDK for Rust — define cloud infrastructure as Rust code"
 license = "Apache-2.0"
 
+[features]
+macros = ["dep:pulumi-macros"]
+
 [dependencies]
 pulumi-core = { path = "../pulumi-core" }
+pulumi-macros = { path = "../pulumi-macros", optional = true }
 
 [lib]
 doctest = false

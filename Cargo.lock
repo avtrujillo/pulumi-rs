@@ -679,6 +679,7 @@ name = "pulumi"
 version = "0.1.0"
 dependencies = [
  "pulumi-core",
+ "pulumi-macros",
 ]
 
 [[package]]
@@ -694,6 +695,15 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "pulumi-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
