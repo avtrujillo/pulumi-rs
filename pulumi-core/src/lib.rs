@@ -74,6 +74,7 @@ pub mod log;
 pub mod output;
 pub mod resource;
 pub mod stack;
+pub mod transform;
 
 pub(crate) mod serde;
 
@@ -91,10 +92,11 @@ pub use error::{Error, Result};
 pub use invoke::{CallBuilder, CallResult, ComponentMethod, InvokeBuilder, InvokeOptions, ProviderFunction};
 pub use output::{all, all2, all3, from_future, Output};
 pub use resource::{
-    ComponentBuilder, ComponentResource, ReadBuilder, RegisteredComponent,
-    RegisteredRemoteComponent, RegisteredResource, RemoteComponent, RemoteComponentBuilder,
-    Resource, ResourceBuilder, ResourceOptions,
+    Alias, AliasParent, AliasSpec, ComponentBuilder, ComponentResource, CustomTimeouts,
+    ReadBuilder, RegisteredComponent, RegisteredRemoteComponent, RegisteredResource,
+    RemoteComponent, RemoteComponentBuilder, Resource, ResourceBuilder, ResourceOptions,
 };
+pub use transform::{register_stack_transform, TransformArgs, TransformFn, TransformResult};
 
 /// Runs a Pulumi program.
 ///

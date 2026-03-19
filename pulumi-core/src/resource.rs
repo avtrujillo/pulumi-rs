@@ -9,6 +9,60 @@ use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
 use crate::serde::{json_to_struct, struct_to_json};
 
+/// An alias for a resource, used to migrate resources without replacement.
+///
+/// Aliases tell the Pulumi engine that a resource may have previously existed
+/// under a different URN. This allows renaming, re-parenting, or re-typing
+/// resources without triggering a delete+create.
+#[derive(Debug, Clone)]
+pub enum Alias {
+    /// A fully-specified previous URN.
+    Urn(String),
+    /// A structured alias specification that can override individual components
+    /// of the URN (name, type, stack, project, parent).
+    Spec(AliasSpec),
+}
+
+/// A structured alias specification.
+///
+/// Each field overrides the corresponding component of the resource's URN.
+/// Fields left as `None` default to the current resource's values.
+#[derive(Debug, Clone, Default)]
+pub struct AliasSpec {
+    /// The previous name of the resource.
+    pub name: Option<String>,
+    /// The previous type of the resource.
+    pub r#type: Option<String>,
+    /// The previous stack.
+    pub stack: Option<String>,
+    /// The previous project.
+    pub project: Option<String>,
+    /// The previous parent.
+    pub parent: Option<AliasParent>,
+}
+
+/// Specifies the previous parent of a resource in an alias.
+#[derive(Debug, Clone)]
+pub enum AliasParent {
+    /// The URN of the previous parent.
+    Urn(String),
+    /// The resource previously had no parent (was a root-level resource).
+    NoParent,
+}
+
+/// Custom timeout values for resource CRUD operations.
+///
+/// Each timeout is a duration string (e.g. `"5m"`, `"1h"`, `"30s"`).
+#[derive(Debug, Clone, Default)]
+pub struct CustomTimeouts {
+    /// Timeout for create operations.
+    pub create: Option<String>,
+    /// Timeout for update operations.
+    pub update: Option<String>,
+    /// Timeout for delete operations.
+    pub delete: Option<String>,
+}
+
 /// Options for registering a resource.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceOptions {
@@ -36,6 +90,14 @@ pub struct ResourceOptions {
     pub retain_on_delete: bool,
     /// An existing resource ID to import.
     pub import_id: Option<String>,
+    /// Aliases for this resource, allowing renames and re-parenting
+    /// without replacement.
+    pub aliases: Vec<Alias>,
+    /// Custom timeouts for create, update, and delete operations.
+    pub custom_timeouts: Option<CustomTimeouts>,
+    /// If set, this resource will be deleted when the specified resource
+    /// URN is deleted, without requiring an explicit delete call.
+    pub deleted_with: Option<String>,
 }
 
 /// Internal result of registering a resource (untyped JSON).
@@ -209,6 +271,30 @@ impl<R: Resource> ResourceBuilder<R> {
     /// Retains the resource in the cloud when it is deleted from the program.
     pub fn retain_on_delete(mut self) -> Self {
         self.opts.retain_on_delete = true;
+        self
+    }
+
+    /// Adds an alias for this resource.
+    pub fn alias(mut self, alias: Alias) -> Self {
+        self.opts.aliases.push(alias);
+        self
+    }
+
+    /// Adds a URN alias for this resource.
+    pub fn alias_urn(mut self, urn: impl Into<String>) -> Self {
+        self.opts.aliases.push(Alias::Urn(urn.into()));
+        self
+    }
+
+    /// Sets custom timeouts for create, update, and delete operations.
+    pub fn custom_timeouts(mut self, timeouts: CustomTimeouts) -> Self {
+        self.opts.custom_timeouts = Some(timeouts);
+        self
+    }
+
+    /// Sets the resource that, when deleted, also deletes this resource.
+    pub fn deleted_with(mut self, urn: impl Into<String>) -> Self {
+        self.opts.deleted_with = Some(urn.into());
         self
     }
 }
@@ -541,6 +627,26 @@ impl<R: RemoteComponent> IntoFuture for RemoteComponentBuilder<R> {
 // Internal registration functions (used by builders and stack.rs)
 // ---------------------------------------------------------------------------
 
+pub(crate) fn alias_to_proto(alias: &Alias) -> pulumirpc::Alias {
+    match alias {
+        Alias::Urn(urn) => pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Urn(urn.clone())),
+        },
+        Alias::Spec(spec) => pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Spec(pulumirpc::alias::Spec {
+                name: spec.name.clone().unwrap_or_default(),
+                r#type: spec.r#type.clone().unwrap_or_default(),
+                stack: spec.stack.clone().unwrap_or_default(),
+                project: spec.project.clone().unwrap_or_default(),
+                parent: spec.parent.as_ref().map(|p| match p {
+                    AliasParent::Urn(urn) => pulumirpc::alias::spec::Parent::ParentUrn(urn.clone()),
+                    AliasParent::NoParent => pulumirpc::alias::spec::Parent::NoParent(true),
+                }),
+            })),
+        },
+    }
+}
+
 pub(crate) async fn register_resource_inner(
     ctx: &Context,
     resource_type: &str,
@@ -571,7 +677,13 @@ pub(crate) async fn register_resource_inner(
         additional_secret_outputs: opts.additional_secret_outputs.clone(),
         alias_ur_ns: Vec::new(),
         import_id: opts.import_id.clone().unwrap_or_default(),
-        custom_timeouts: None,
+        custom_timeouts: opts.custom_timeouts.as_ref().map(|t| {
+            pulumirpc::register_resource_request::CustomTimeouts {
+                create: t.create.clone().unwrap_or_default(),
+                update: t.update.clone().unwrap_or_default(),
+                delete: t.delete.clone().unwrap_or_default(),
+            }
+        }),
         delete_before_replace_defined: opts.delete_before_replace,
         supports_partial_values: true,
         remote,
@@ -581,8 +693,8 @@ pub(crate) async fn register_resource_inner(
         plugin_download_url: opts.plugin_download_url.clone(),
         plugin_checksums: HashMap::new(),
         retain_on_delete: Some(opts.retain_on_delete),
-        aliases: Vec::new(),
-        deleted_with: String::new(),
+        aliases: opts.aliases.iter().map(alias_to_proto).collect(),
+        deleted_with: opts.deleted_with.clone().unwrap_or_default(),
         alias_specs: true,
         source_position: None,
         transforms: Vec::new(),
