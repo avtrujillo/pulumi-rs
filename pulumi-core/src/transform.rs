@@ -119,6 +119,8 @@ struct ServerHandle {
 /// All subsequent transforms share the same server.
 static CALLBACK_SERVER: Mutex<Option<ServerHandle>> = Mutex::const_new(None);
 
+/// Starts the callback gRPC server if it isn't already running, then returns
+/// the server's address and shared transform registry.
 async fn ensure_callback_server() -> Result<(SocketAddr, Arc<Mutex<CallbackState>>)> {
     let mut guard = CALLBACK_SERVER.lock().await;
     if let Some(handle) = guard.as_ref() {
