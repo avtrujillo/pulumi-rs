@@ -182,4 +182,19 @@ impl LocalWorkspace {
         .await?;
         Ok(())
     }
+
+    /// Creates a [`NativeStack`](crate::native::NativeStack) that uses the Rust-native Pulumi
+    /// engine instead of the CLI.
+    ///
+    /// The `program` argument specifies the command to run (e.g. `["./target/release/my-program"]`).
+    ///
+    /// Requires the `native-engine` feature.
+    #[cfg(feature = "native-engine")]
+    pub fn native_stack(
+        &self,
+        name: &str,
+        program: Vec<String>,
+    ) -> crate::native::NativeStack {
+        crate::native::NativeStack::new(self.clone(), name.to_string(), program)
+    }
 }

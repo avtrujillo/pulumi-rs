@@ -33,11 +33,15 @@ pub mod cmd;
 pub mod config;
 pub mod error;
 pub mod event;
+#[cfg(feature = "native-engine")]
+pub mod native;
 pub mod stack;
 pub mod workspace;
 
 pub use config::ConfigValue;
 pub use error::{Error, Result};
 pub use event::EngineEvent;
+#[cfg(feature = "native-engine")]
+pub use native::NativeStack;
 pub use stack::{DestroyResult, OutputValue, PreviewResult, RefreshResult, Stack, UpResult};
 pub use workspace::{LocalWorkspace, StackSummary};

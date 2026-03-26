@@ -794,6 +794,7 @@ dependencies = [
 name = "pulumi-automation"
 version = "0.1.0"
 dependencies = [
+ "pulumi-engine",
  "serde",
  "serde_json",
  "thiserror",
@@ -815,6 +816,20 @@ name = "pulumi-core"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "prost",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "pulumi-engine"
+version = "0.1.0"
+dependencies = [
  "prost",
  "prost-types",
  "serde",
