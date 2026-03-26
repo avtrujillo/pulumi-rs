@@ -2,6 +2,17 @@
 
 Automation API for Pulumi — drive stack operations (`up`, `preview`, `destroy`, `refresh`) programmatically by wrapping the Pulumi CLI as a subprocess. Requires the `pulumi` binary on PATH.
 
+## Why subprocesses?
+
+This crate invokes the `pulumi` CLI binary rather than using gRPC directly. This is necessary because the Pulumi engine is embedded inside the CLI — there is no standalone engine server to connect to. The lifecycle is:
+
+1. `pulumi-automation` spawns `pulumi up` (or preview/destroy/refresh)
+2. The CLI starts the engine and resource monitor internally
+3. The engine runs the user's program, which uses `pulumi-core` to talk gRPC back to the engine
+4. The program exits, the CLI completes the deployment
+
+So `pulumi-automation` sits *outside* the CLI (driving it), while `pulumi-core` sits *inside* (called by it). Both depend on having `pulumi` installed.
+
 ## Build
 
 ```bash
