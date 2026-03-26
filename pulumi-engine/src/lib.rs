@@ -30,6 +30,7 @@
 //! let result = engine.up().await?;
 //! ```
 
+pub mod diff;
 pub mod engine_service;
 pub mod error;
 pub mod monitor_service;
@@ -39,4 +40,5 @@ pub mod state;
 pub(crate) use pulumi_core::proto::pulumirpc;
 
 pub use error::{Error, Result};
-pub use orchestrator::{EngineOptions, PulumiEngine, UpResult};
+pub use orchestrator::{DestroyResult, EngineOptions, PulumiEngine, RefreshResult, UpResult};
+pub use state::Checkpoint;

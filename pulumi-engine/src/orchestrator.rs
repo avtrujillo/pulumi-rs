@@ -11,7 +11,7 @@ use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
 use crate::pulumirpc;
-use crate::state::EngineState;
+use crate::state::{Checkpoint, EngineState};
 
 /// Configuration for a Pulumi engine run.
 #[derive(Debug, Clone)]
@@ -28,6 +28,9 @@ pub struct EngineOptions {
     pub dry_run: bool,
     /// Extra environment variables to pass to the program.
     pub env: HashMap<String, String>,
+    /// Path to the checkpoint file for state persistence.
+    /// Defaults to `<work_dir>/.pulumi-rs/<stack>.json`.
+    pub checkpoint_path: Option<PathBuf>,
 }
 
 impl Default for EngineOptions {
@@ -39,7 +42,19 @@ impl Default for EngineOptions {
             program: Vec::new(),
             dry_run: false,
             env: HashMap::new(),
+            checkpoint_path: None,
         }
+    }
+}
+
+impl EngineOptions {
+    /// Resolve the checkpoint file path.
+    fn checkpoint_path(&self) -> PathBuf {
+        self.checkpoint_path.clone().unwrap_or_else(|| {
+            self.work_dir
+                .join(".pulumi-rs")
+                .join(format!("{}.json", self.stack))
+        })
     }
 }
 
@@ -54,6 +69,24 @@ pub struct UpResult {
     pub stderr: String,
 }
 
+/// The result of a destroy operation.
+#[derive(Debug, Clone)]
+pub struct DestroyResult {
+    /// Summary of destroyed resources.
+    pub stdout: String,
+    /// Any warnings or errors.
+    pub stderr: String,
+}
+
+/// The result of a refresh operation.
+#[derive(Debug, Clone)]
+pub struct RefreshResult {
+    /// Summary output.
+    pub stdout: String,
+    /// Any warnings or errors.
+    pub stderr: String,
+}
+
 /// The Rust-native Pulumi engine.
 pub struct PulumiEngine {
     options: EngineOptions,
@@ -65,17 +98,133 @@ impl PulumiEngine {
     }
 
     /// Run the Pulumi program (equivalent to `pulumi up`).
+    ///
+    /// Loads prior state from the checkpoint, runs the program to register
+    /// resources (diffing against prior state), then saves the new checkpoint.
     pub async fn up(&self) -> Result<UpResult> {
-        self.run(false).await
+        self.run_program(false).await
     }
 
     /// Run the Pulumi program in preview/dry-run mode.
+    ///
+    /// Loads prior state and runs the program, but does not persist the
+    /// resulting checkpoint.
     pub async fn preview(&self) -> Result<UpResult> {
-        self.run(true).await
+        self.run_program(true).await
     }
 
-    async fn run(&self, dry_run: bool) -> Result<UpResult> {
-        let state = EngineState::new(self.options.project.clone(), self.options.stack.clone());
+    /// Destroy all resources in the stack.
+    ///
+    /// Loads the checkpoint, logs each resource that would be deleted (in
+    /// reverse dependency order), then clears the checkpoint. Provider delete
+    /// calls are not yet implemented — this only updates state.
+    pub async fn destroy(&self) -> Result<DestroyResult> {
+        let checkpoint_path = self.options.checkpoint_path();
+        let checkpoint = Checkpoint::load(&checkpoint_path).map_err(|e| {
+            Error::Custom(format!("failed to load checkpoint: {e}"))
+        })?;
+
+        let mut summary = String::new();
+
+        match checkpoint {
+            None => {
+                summary.push_str("No resources to destroy (no checkpoint found).\n");
+            }
+            Some(cp) => {
+                let state = EngineState::from_checkpoint(&cp);
+                let resources = state.get_prior_resources().await;
+
+                if resources.is_empty() {
+                    summary.push_str("No resources to destroy.\n");
+                } else {
+                    // Delete in reverse order (children before parents).
+                    let mut urns: Vec<_> = cp.resources.iter().map(|r| &r.urn).collect();
+                    urns.reverse();
+
+                    for urn in &urns {
+                        if let Some(res) = resources.get(*urn) {
+                            // TODO: Call provider.Delete for custom resources.
+                            let action = if res.custom { "delete" } else { "remove" };
+                            eprintln!("[engine] {action}: {} ({})", urn, res.resource_type);
+                            summary.push_str(&format!(
+                                "- {action} {} ({})\n",
+                                res.name, res.resource_type
+                            ));
+                        }
+                    }
+
+                    // Save empty checkpoint.
+                    let empty = state.empty_checkpoint().await;
+                    empty.save(&checkpoint_path).map_err(|e| {
+                        Error::Custom(format!("failed to save checkpoint: {e}"))
+                    })?;
+
+                    summary.push_str(&format!(
+                        "\nDestroyed {} resource(s).\n",
+                        urns.len()
+                    ));
+                }
+            }
+        }
+
+        Ok(DestroyResult {
+            stdout: summary,
+            stderr: String::new(),
+        })
+    }
+
+    /// Refresh the stack state.
+    ///
+    /// Loads the checkpoint and re-reads each resource's current state.
+    /// Provider read calls are not yet implemented — this currently just
+    /// validates and re-saves the checkpoint.
+    pub async fn refresh(&self) -> Result<RefreshResult> {
+        let checkpoint_path = self.options.checkpoint_path();
+        let checkpoint = Checkpoint::load(&checkpoint_path).map_err(|e| {
+            Error::Custom(format!("failed to load checkpoint: {e}"))
+        })?;
+
+        let mut summary = String::new();
+
+        match checkpoint {
+            None => {
+                summary.push_str("No checkpoint found, nothing to refresh.\n");
+            }
+            Some(cp) => {
+                let resource_count = cp.resources.len();
+                // TODO: For each resource, call provider.Read to get current state.
+                // For now, just re-save the checkpoint as-is.
+                for res in &cp.resources {
+                    eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
+                }
+
+                cp.save(&checkpoint_path).map_err(|e| {
+                    Error::Custom(format!("failed to save checkpoint: {e}"))
+                })?;
+
+                summary.push_str(&format!("Refreshed {resource_count} resource(s).\n"));
+            }
+        }
+
+        Ok(RefreshResult {
+            stdout: summary,
+            stderr: String::new(),
+        })
+    }
+
+    async fn run_program(&self, dry_run: bool) -> Result<UpResult> {
+        let checkpoint_path = self.options.checkpoint_path();
+
+        // Load prior state from checkpoint.
+        let state = match Checkpoint::load(&checkpoint_path) {
+            Ok(Some(cp)) => EngineState::from_checkpoint(&cp),
+            Ok(None) => {
+                EngineState::new(self.options.project.clone(), self.options.stack.clone())
+            }
+            Err(e) => {
+                return Err(Error::Custom(format!("failed to load checkpoint: {e}")));
+            }
+        };
 
         // Bind the gRPC servers to ephemeral ports.
         let monitor_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -114,7 +263,7 @@ impl PulumiEngine {
                 .await
         });
 
-        // Build the config JSON from any env vars matching the project prefix.
+        // Build the config JSON.
         let config_json = serde_json::to_string(&self.options.env).unwrap_or_default();
 
         // Spawn the user's program with PULUMI_* env vars.
@@ -144,7 +293,6 @@ impl PulumiEngine {
             .env("PULUMI_PARALLEL", "-1")
             .env("PULUMI_CONFIG", &config_json);
 
-        // Pass through any extra env vars.
         for (k, v) in &self.options.env {
             cmd.env(k, v);
         }
@@ -154,7 +302,7 @@ impl PulumiEngine {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-        // Abort the gRPC servers now that the program is done.
+        // Abort the gRPC servers.
         monitor_handle.abort();
         engine_handle.abort();
 
@@ -166,7 +314,21 @@ impl PulumiEngine {
             });
         }
 
+        // Log resources deleted from prior state (present before, not registered now).
+        let deleted_urns = state.get_deleted_urns().await;
+        for urn in &deleted_urns {
+            eprintln!("[engine] delete: {urn}");
+        }
+
         let outputs = state.get_stack_outputs().await;
+
+        // Save checkpoint (unless dry run).
+        if !dry_run && !self.options.dry_run {
+            let checkpoint = state.to_checkpoint().await;
+            checkpoint.save(&checkpoint_path).map_err(|e| {
+                Error::Custom(format!("failed to save checkpoint: {e}"))
+            })?;
+        }
 
         Ok(UpResult {
             outputs,

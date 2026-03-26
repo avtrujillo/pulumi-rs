@@ -6,6 +6,7 @@ Rust-native Pulumi engine. Implements the ResourceMonitor and Engine gRPC *serve
 
 ```bash
 cargo build -p pulumi-engine    # Requires protoc on PATH (needed by pulumi-core)
+cargo test -p pulumi-engine     # 4 diff tests
 ```
 
 Uses protobuf types and gRPC server traits from `pulumi_core::proto::pulumirpc` (the proto module is public). No separate proto compilation — `pulumi-core` generates both client and server stubs.
@@ -14,42 +15,67 @@ Doctests are disabled (`doctest = false`).
 
 ## How it works
 
+### `up` / `preview`
+
 ```
 PulumiEngine::up()
   |
-  +-- Start ResourceMonitor gRPC server on 127.0.0.1:<ephemeral>
-  +-- Start Engine gRPC server on 127.0.0.1:<ephemeral>
+  +-- Load prior checkpoint from <work_dir>/.pulumi-rs/<stack>.json
+  +-- Start ResourceMonitor + Engine gRPC servers on ephemeral ports
+  +-- Spawn user program with PULUMI_* env vars
+  +-- Handle gRPC calls: diff each RegisterResource against prior state
+  +-- Detect deleted resources (in prior but not re-registered)
+  +-- Save checkpoint to disk (skipped for preview/dry-run)
+  +-- Return UpResult with stack outputs
+```
+
+### `destroy`
+
+```
+PulumiEngine::destroy()
   |
-  +-- Spawn user program as subprocess with PULUMI_* env vars:
-  |     PULUMI_MONITOR=127.0.0.1:<port>
-  |     PULUMI_ENGINE=127.0.0.1:<port>
-  |     PULUMI_PROJECT=<project>
-  |     PULUMI_STACK=<stack>
-  |     PULUMI_DRY_RUN=true|false
+  +-- Load checkpoint
+  +-- Walk resources in reverse order, log each deletion
+  +-- Save empty checkpoint
+  +-- Return DestroyResult
+```
+
+### `refresh`
+
+```
+PulumiEngine::refresh()
   |
-  +-- Handle gRPC calls from the program (resource registration, logging, etc.)
-  +-- Collect stack outputs from RegisterResourceOutputs
-  +-- Return UpResult when the program exits
+  +-- Load checkpoint
+  +-- Log each resource (TODO: call provider.Read to sync actual state)
+  +-- Re-save checkpoint
 ```
 
 ## Module Guide
 
 | Module | Purpose |
 |--------|---------|
-| `orchestrator.rs` | `PulumiEngine` — starts gRPC servers, spawns user program, collects results. `EngineOptions` configures project/stack/program. |
+| `orchestrator.rs` | `PulumiEngine` with `up()`, `preview()`, `destroy()`, `refresh()`. `EngineOptions` configures project/stack/program/checkpoint path. |
 | `engine_service.rs` | Implements the `Engine` gRPC service: `Log` (prints to stderr), `GetRootResource`, `SetRootResource`, `StartDebugging` (no-op), `RequirePulumiVersion` (accepts any). |
-| `monitor_service.rs` | Implements the `ResourceMonitor` gRPC service: `RegisterResource` (assigns URN, synthetic ID), `RegisterResourceOutputs` (captures stack outputs), `SupportsFeature`, `Invoke`/`Call` (stubs), `ReadResource`, `RegisterPackage`, `SignalAndWaitForShutdown`. |
-| `state.rs` | `EngineState` — in-memory state behind `Arc<Mutex<>>`. Tracks registered resources, root URN, stack outputs. Generates URNs. |
+| `monitor_service.rs` | Implements the `ResourceMonitor` gRPC service. `RegisterResource` diffs against prior state to determine create/update/same. `RegisterResourceOutputs` captures stack outputs. `Invoke`/`Call` are stubs. |
+| `diff.rs` | `diff_resource()` compares new inputs against prior `ResourceState`. Returns `ResourceAction` (Create/Update/Same). Supports `ignore_changes`. 4 unit tests. |
+| `state.rs` | `EngineState` — shared state behind `Arc<Mutex<>>`. Tracks current + prior resources, root URN, stack outputs. `Checkpoint` for JSON serialization to disk. |
 | `error.rs` | `Error` enum: `Transport`, `ProgramFailed`, `Spawn`, `Custom`. |
+
+## State persistence
+
+State is saved as a JSON `Checkpoint` to `<work_dir>/.pulumi-rs/<stack>.json` (configurable via `EngineOptions::checkpoint_path`). The checkpoint contains:
+- All registered resources (URN, ID, type, inputs, outputs, dependencies)
+- Stack outputs
+- Project/stack metadata
+
+On subsequent `up()` calls, prior state is loaded and used for diffing. On `destroy()`, the checkpoint is cleared. Preview does not persist state.
 
 ## Current limitations (TODOs)
 
 - **No provider plugins**: `RegisterResource` assigns synthetic IDs instead of calling real providers. `Invoke` and `Call` return empty results.
-- **No state persistence**: All state is in-memory; no checkpoint/snapshot files.
-- **No diff/update planning**: Every run is a fresh creation, no update or delete logic.
-- **No secret encryption**: Secrets are not encrypted in state.
+- **No secret encryption**: Secrets are not encrypted in the checkpoint.
 - **No transforms**: `RegisterStackTransform` is accepted but ignored.
-- **No destroy**: Only `up` and `preview` are implemented.
+- **No provider reads on refresh**: `refresh()` re-saves the checkpoint without actually querying providers.
 
 ## Integration with pulumi-automation
 
@@ -58,7 +84,8 @@ Enable the `native-engine` feature on `pulumi-automation` to get `NativeStack`, 
 ```rust
 let ws = LocalWorkspace::new("./my-project");
 let stack = ws.native_stack("dev", vec!["./target/release/my-program".into()]);
-let result = stack.up().await?;
+let result = stack.up().await?;      // create/update with checkpoint
+stack.destroy().await?;               // tear down + clear checkpoint
 ```
 
 ## Dependencies
@@ -67,5 +94,5 @@ let result = stack.up().await?;
 - **tokio** — async runtime + subprocess spawning
 - **tonic** — gRPC server framework
 - **prost-types** — protobuf well-known types (Struct, Value)
-- **serde / serde_json** — JSON handling for state
+- **serde / serde_json** — JSON serialization for checkpoint and state
 - **tokio-stream** — `TcpListenerStream` for tonic's `serve_with_incoming`

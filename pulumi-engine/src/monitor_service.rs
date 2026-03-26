@@ -1,8 +1,9 @@
 //! Implementation of the ResourceMonitor gRPC service.
 //!
 //! Handles resource registration, invocations, and feature queries from the
-//! Pulumi program.
+//! Pulumi program. Diffs against prior state to determine create vs update.
 
+use crate::diff::{self, ResourceAction};
 use crate::pulumirpc;
 use crate::state::{EngineState, ResourceState};
 use tonic::{Request, Response, Status};
@@ -25,7 +26,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         request: Request<pulumirpc::SupportsFeatureRequest>,
     ) -> Result<Response<pulumirpc::SupportsFeatureResponse>, Status> {
         let feature = request.into_inner().id;
-        // Support the features that pulumi-core may query for.
         let supported = matches!(
             feature.as_str(),
             "secrets" | "resourceReferences" | "outputValues" | "aliasSpecs"
@@ -94,17 +94,50 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             .make_urn(&req.r#type, &req.name, &req.parent)
             .await;
 
-        // For component resources (custom=false), just assign a URN.
-        // For custom resources, we would normally call the provider's CRUD.
-        let id = if req.custom && !self.dry_run {
-            // TODO: Call the actual provider. For now, generate a synthetic ID.
-            format!("{}-id", req.name)
-        } else {
-            String::new()
+        let inputs = req
+            .object
+            .as_ref()
+            .map(proto_struct_to_json)
+            .unwrap_or(serde_json::Value::Object(Default::default()));
+
+        // Diff against prior state to determine action.
+        let prior = self.state.get_prior_resource(&urn).await;
+        let diff_result = diff::diff_resource(
+            &urn,
+            &inputs,
+            prior.as_ref(),
+            &req.ignore_changes,
+        );
+
+        // Determine the resource ID.
+        let id = match diff_result.action {
+            ResourceAction::Same | ResourceAction::Update => {
+                // Keep the prior ID.
+                prior.as_ref().map(|p| p.id.clone()).unwrap_or_default()
+            }
+            ResourceAction::Create => {
+                if req.custom && !self.dry_run {
+                    // TODO: Call the actual provider. For now, generate a synthetic ID.
+                    format!("{}-id", req.name)
+                } else {
+                    String::new()
+                }
+            }
         };
 
+        let action_label = match diff_result.action {
+            ResourceAction::Create => "create",
+            ResourceAction::Update => "update",
+            ResourceAction::Same => "same",
+        };
+        if diff_result.action != ResourceAction::Same {
+            eprintln!("[engine] {action_label}: {} ({})", urn, req.r#type);
+        }
+
+        // Collect dependencies from the request.
+        let dependencies = req.dependencies.clone();
+
         // Store the resource state.
-        let outputs = req.object.clone().unwrap_or_default();
         let resource_state = ResourceState {
             urn: urn.clone(),
             id: id.clone(),
@@ -112,7 +145,13 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             name: req.name.clone(),
             custom: req.custom,
             parent: req.parent.clone(),
-            outputs: proto_struct_to_json(&outputs),
+            inputs,
+            outputs: req
+                .object
+                .as_ref()
+                .map(proto_struct_to_json)
+                .unwrap_or(serde_json::Value::Object(Default::default())),
+            dependencies,
         };
         self.state.register_resource(resource_state).await;
 
@@ -150,7 +189,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         &self,
         _request: Request<pulumirpc::Callback>,
     ) -> Result<Response<()>, Status> {
-        // TODO: Implement transform support.
         Ok(Response::new(()))
     }
 
@@ -158,7 +196,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         &self,
         _request: Request<pulumirpc::Callback>,
     ) -> Result<Response<()>, Status> {
-        // TODO: Implement invoke transform support.
         Ok(Response::new(()))
     }
 
@@ -166,7 +203,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         &self,
         _request: Request<pulumirpc::RegisterResourceHookRequest>,
     ) -> Result<Response<()>, Status> {
-        // TODO: Implement hook support.
         Ok(Response::new(()))
     }
 
@@ -174,7 +210,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         &self,
         _request: Request<pulumirpc::RegisterErrorHookRequest>,
     ) -> Result<Response<()>, Status> {
-        // TODO: Implement error hook support.
         Ok(Response::new(()))
     }
 
@@ -183,7 +218,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         request: Request<pulumirpc::RegisterPackageRequest>,
     ) -> Result<Response<pulumirpc::RegisterPackageResponse>, Status> {
         let req = request.into_inner();
-        // Generate a deterministic ref from the package name + version.
         let package_ref = format!("{}@{}", req.name, req.version);
         Ok(Response::new(pulumirpc::RegisterPackageResponse {
             r#ref: package_ref,
@@ -194,13 +228,12 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         &self,
         _request: Request<()>,
     ) -> Result<Response<()>, Status> {
-        // The program is done. Nothing to wait for in this minimal engine.
         Ok(Response::new(()))
     }
 }
 
 /// Convert a protobuf Struct to a serde_json::Value.
-fn proto_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
+pub(crate) fn proto_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (k, v) in &s.fields {
         map.insert(k.clone(), proto_value_to_json(v));

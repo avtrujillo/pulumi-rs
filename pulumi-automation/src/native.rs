@@ -57,6 +57,7 @@ impl NativeStack {
             program: self.program.clone(),
             dry_run,
             env: HashMap::new(),
+            checkpoint_path: None,
         }
     }
 
@@ -86,6 +87,38 @@ impl NativeStack {
             .map_err(|e| Error::Custom(e.to_string()))?;
 
         Ok(crate::stack::PreviewResult {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            events: Vec::new(),
+        })
+    }
+
+    /// Destroys all resources in the stack using the native engine.
+    pub async fn destroy(&self) -> Result<crate::stack::DestroyResult> {
+        let opts = self.engine_options(false);
+        let engine = PulumiEngine::new(opts);
+        let result = engine
+            .destroy()
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))?;
+
+        Ok(crate::stack::DestroyResult {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            events: Vec::new(),
+        })
+    }
+
+    /// Refreshes the stack state using the native engine.
+    pub async fn refresh(&self) -> Result<crate::stack::RefreshResult> {
+        let opts = self.engine_options(false);
+        let engine = PulumiEngine::new(opts);
+        let result = engine
+            .refresh()
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))?;
+
+        Ok(crate::stack::RefreshResult {
             stdout: result.stdout,
             stderr: result.stderr,
             events: Vec::new(),
