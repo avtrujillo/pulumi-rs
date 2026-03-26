@@ -830,14 +830,13 @@ dependencies = [
 name = "pulumi-engine"
 version = "0.1.0"
 dependencies = [
- "prost",
  "prost-types",
+ "pulumi-core",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
 ]
 
 [[package]]

@@ -5,10 +5,10 @@ Rust-native Pulumi engine. Implements the ResourceMonitor and Engine gRPC *serve
 ## Build
 
 ```bash
-cargo build -p pulumi-engine    # Requires protoc on PATH
+cargo build -p pulumi-engine    # Requires protoc on PATH (needed by pulumi-core)
 ```
 
-Protobuf server stubs are generated at build time by `build.rs` using `tonic-build` (client stubs are disabled). Proto files are symlinked from `pulumi-core/proto/`.
+Uses protobuf types and gRPC server traits from `pulumi_core::proto::pulumirpc` (the proto module is public). No separate proto compilation — `pulumi-core` generates both client and server stubs.
 
 Doctests are disabled (`doctest = false`).
 
@@ -63,8 +63,9 @@ let result = stack.up().await?;
 
 ## Dependencies
 
+- **pulumi-core** — proto types and gRPC server traits (`pulumi_core::proto::pulumirpc`)
 - **tokio** — async runtime + subprocess spawning
 - **tonic** — gRPC server framework
-- **prost / prost-types** — protobuf types
+- **prost-types** — protobuf well-known types (Struct, Value)
 - **serde / serde_json** — JSON handling for state
 - **tokio-stream** — `TcpListenerStream` for tonic's `serve_with_incoming`

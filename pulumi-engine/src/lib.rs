@@ -36,13 +36,7 @@ pub mod monitor_service;
 pub mod orchestrator;
 pub mod state;
 
-/// Generated protobuf types for the Pulumi gRPC protocol (server stubs only).
-#[allow(warnings)]
-pub(crate) mod proto {
-    pub mod pulumirpc {
-        tonic::include_proto!("pulumirpc");
-    }
-}
+pub(crate) use pulumi_core::proto::pulumirpc;
 
 pub use error::{Error, Result};
 pub use orchestrator::{EngineOptions, PulumiEngine, UpResult};

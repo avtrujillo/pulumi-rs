@@ -10,7 +10,7 @@ use tonic::transport::Server;
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
-use crate::proto::pulumirpc;
+use crate::pulumirpc;
 use crate::state::EngineState;
 
 /// Configuration for a Pulumi engine run.

@@ -2,7 +2,7 @@
 //!
 //! Handles logging and root resource management for the Pulumi program.
 
-use crate::proto::pulumirpc;
+use crate::pulumirpc;
 use crate::state::EngineState;
 use tonic::{Request, Response, Status};
 

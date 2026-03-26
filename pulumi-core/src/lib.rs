@@ -81,7 +81,7 @@ pub(crate) mod serde;
 
 /// Generated protobuf types for the Pulumi gRPC protocol.
 #[allow(warnings)]
-pub(crate) mod proto {
+pub mod proto {
     pub mod pulumirpc {
         tonic::include_proto!("pulumirpc");
     }
