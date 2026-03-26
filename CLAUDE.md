@@ -25,7 +25,7 @@ cargo clippy         # Lint
 cargo test <name>    # Run a single test by name
 ```
 
-Protobuf client stubs are generated at build time by `pulumi-core/build.rs` using `tonic-build`. No server code is generated.
+Protobuf client stubs are generated at build time by `build.rs` using `tonic-build`. No server code is generated. Requires `protoc` on the system PATH. Generated types are accessed internally via `crate::proto::pulumirpc`.
 
 ## Architecture
 
@@ -50,6 +50,12 @@ The SDK entry point is `pulumi_core::run(program)` in `pulumi-core/src/lib.rs`, 
 ### Proto definitions
 
 Located in `pulumi-core/proto/pulumi/`. Key services: `ResourceMonitor` (resource.proto) for resource registration/invocation, `Engine` (engine.proto) for logging and root resource management.
+
+### Key patterns
+
+- **`CustomResource` builder**: Fluent API — `CustomResource::new(ctx, type, name)` → `.inputs()` → `.options()` → `.parent()` → `.provider()` → `.depends_on()` → `.register().await` returns `(Output<urn>, Output<id>, Output<outputs>)`.
+- **`Output<T>` resolution**: Create with `Output::new()` which returns `(Output<T>, OutputResolver<T>)`. The resolver must be used to complete the output; dropping it without resolving triggers auto-rejection.
+- **Tests**: Unit tests live in `#[cfg(test)] mod tests` within `output.rs` (15 async tests) and `serde.rs` (2 tests). All async tests use `#[tokio::test]`.
 
 ## Conventions
 
