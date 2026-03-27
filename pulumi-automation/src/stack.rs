@@ -205,19 +205,31 @@ impl Stack {
     /// Imports a previously exported deployment state.
     pub async fn import_state(&self, state: &serde_json::Value) -> Result<()> {
         let json = serde_json::to_string(state)?;
-        // Use `echo | pulumi stack import` via shell
-        run_pulumi_cmd(
+
+        // Write the state to a temporary file and import from it, since
+        // run_pulumi_cmd does not support piping to stdin.
+        let tmp_dir = self.workspace.work_dir().join(".pulumi-rs-tmp");
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+            crate::error::Error::Custom(format!("failed to create temp dir: {e}"))
+        })?;
+        let tmp_file = tmp_dir.join("import-state.json");
+        std::fs::write(&tmp_file, &json).map_err(|e| {
+            crate::error::Error::Custom(format!("failed to write temp state file: {e}"))
+        })?;
+
+        let tmp_path = tmp_file.to_string_lossy();
+        let result = run_pulumi_cmd(
             self.workspace.work_dir(),
-            &["stack", "import", "--stack", &self.name, "--file", "/dev/stdin"],
+            &["stack", "import", "--stack", &self.name, "--file", &tmp_path],
             &[],
         )
-        .await
-        .map_err(|_| {
-            crate::error::Error::Custom(format!(
-                "stack import failed; state payload was {} bytes",
-                json.len()
-            ))
-        })?;
+        .await;
+
+        // Clean up temp file regardless of outcome.
+        let _ = std::fs::remove_file(&tmp_file);
+        let _ = std::fs::remove_dir(&tmp_dir);
+
+        result?;
         Ok(())
     }
 }

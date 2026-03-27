@@ -93,10 +93,10 @@ struct EngineStateInner {
     resource_order: Vec<String>,
     /// Previous run's resources, keyed by URN (loaded from checkpoint).
     prior_resources: HashMap<String, ResourceState>,
+    /// Previous run's resource registration order (from checkpoint).
+    prior_resource_order: Vec<String>,
     /// Stack outputs (set by RegisterResourceOutputs on the stack resource).
     stack_outputs: serde_json::Value,
-    /// Counter for generating unique URNs.
-    urn_counter: u64,
 }
 
 impl EngineState {
@@ -110,14 +110,16 @@ impl EngineState {
                 resources: HashMap::new(),
                 resource_order: Vec::new(),
                 prior_resources: HashMap::new(),
+                prior_resource_order: Vec::new(),
                 stack_outputs: serde_json::Value::Object(Default::default()),
-                urn_counter: 0,
             })),
         }
     }
 
     /// Create engine state from a previously saved checkpoint.
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+        let prior_resource_order: Vec<String> =
+            checkpoint.resources.iter().map(|r| r.urn.clone()).collect();
         let prior_resources: HashMap<String, ResourceState> = checkpoint
             .resources
             .iter()
@@ -132,16 +134,15 @@ impl EngineState {
                 resources: HashMap::new(),
                 resource_order: Vec::new(),
                 prior_resources,
+                prior_resource_order,
                 stack_outputs: checkpoint.outputs.clone(),
-                urn_counter: 0,
             })),
         }
     }
 
     /// Generate a URN for a resource.
     pub async fn make_urn(&self, resource_type: &str, name: &str, parent: &str) -> String {
-        let mut inner = self.inner.lock().await;
-        inner.urn_counter += 1;
+        let inner = self.inner.lock().await;
 
         if parent.is_empty() {
             format!(
@@ -208,16 +209,16 @@ impl EngineState {
     }
 
     /// Get URNs from prior state that were NOT registered in the current run.
-    /// These are resources that should be deleted (in reverse order).
+    /// Returned in reverse registration order so children are deleted before parents.
     pub async fn get_deleted_urns(&self) -> Vec<String> {
         let inner = self.inner.lock().await;
         let mut deleted: Vec<String> = inner
-            .prior_resources
-            .keys()
-            .filter(|urn| !inner.resources.contains_key(*urn))
+            .prior_resource_order
+            .iter()
+            .filter(|urn| !inner.resources.contains_key(urn.as_str()))
             .cloned()
             .collect();
-        // Reverse so children are deleted before parents.
+        // Reverse registration order so children are deleted before parents.
         deleted.reverse();
         deleted
     }

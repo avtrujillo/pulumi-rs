@@ -10,9 +10,12 @@ use prost_types::value::Kind;
 use prost_types::{ListValue, Struct, Value};
 use serde_json::Map;
 
-/// Special key used by Pulumi to mark secret values in the wire format.
-pub const SECRET_SIG: &str = "4dabf18193072939515e22adb298388d";
-/// Special key used by Pulumi to mark unknown values.
+/// Special key used by Pulumi to tag values with a signature in the wire format.
+/// Present in both secret and unknown value wrappers.
+pub const SIG_KEY: &str = "4dabf18193072939515e22adb298388d";
+/// Signature value indicating a secret.
+pub const SECRET_SIG: &str = "1b47061264138c4ac30d75fd1eb44270";
+/// Signature value indicating an unknown (not-yet-known) value.
 pub const UNKNOWN_SIG: &str = "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
 
 /// Converts a `serde_json::Value` to a protobuf `Value`.
@@ -90,14 +93,19 @@ pub fn struct_to_json(s: &Struct) -> serde_json::Value {
 /// Wraps a value as a Pulumi secret in the wire format.
 pub fn wrap_secret(value: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
+        SIG_KEY: SECRET_SIG,
         "value": value,
     })
 }
 
 /// Checks if a protobuf Struct value represents a Pulumi secret.
 pub fn is_secret(s: &Struct) -> bool {
-    s.fields.get("4dabf18193072939515e22adb298388d").is_some()
+    if let Some(sig) = s.fields.get(SIG_KEY) {
+        if let Some(Kind::StringValue(v)) = &sig.kind {
+            return v == SECRET_SIG;
+        }
+    }
+    false
 }
 
 /// Unwraps a Pulumi secret, returning the inner value.
@@ -111,7 +119,7 @@ pub fn unwrap_secret(s: &Struct) -> Option<&Value> {
 
 /// Checks if a protobuf Struct value represents an unknown value.
 pub fn is_unknown(s: &Struct) -> bool {
-    if let Some(sig) = s.fields.get("4dabf18193072939515e22adb298388d") {
+    if let Some(sig) = s.fields.get(SIG_KEY) {
         if let Some(Kind::StringValue(v)) = &sig.kind {
             return v == UNKNOWN_SIG;
         }
