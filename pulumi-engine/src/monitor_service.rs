@@ -1,22 +1,23 @@
 //! Implementation of the ResourceMonitor gRPC service.
 //!
 //! Handles resource registration, invocations, and feature queries from the
-//! Pulumi program. Routes CRUD operations to provider plugins via gRPC.
+//! Pulumi program. Routes CRUD operations to provider plugins via the
+//! [`Provider`](crate::provider::Provider) trait.
 
 use crate::diff::{self, ResourceAction};
-use crate::provider::ProviderManager;
+use crate::provider::{self, Provider, ProviderManager};
 use crate::pulumirpc;
 use crate::state::{EngineState, ResourceState};
 use tonic::{Request, Response, Status};
 
-pub struct ResourceMonitorImpl {
+pub struct ResourceMonitorImpl<P: Provider> {
     state: EngineState,
     dry_run: bool,
-    providers: ProviderManager,
+    providers: ProviderManager<P>,
 }
 
-impl ResourceMonitorImpl {
-    pub fn new(state: EngineState, dry_run: bool, providers: ProviderManager) -> Self {
+impl<P: Provider> ResourceMonitorImpl<P> {
+    pub fn new(state: EngineState, dry_run: bool, providers: ProviderManager<P>) -> Self {
         Self {
             state,
             dry_run,
@@ -26,7 +27,7 @@ impl ResourceMonitorImpl {
 }
 
 #[tonic::async_trait]
-impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl {
+impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl<P> {
     async fn supports_feature(
         &self,
         request: Request<pulumirpc::SupportsFeatureRequest>,
@@ -47,10 +48,9 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
     ) -> Result<Response<pulumirpc::InvokeResponse>, Status> {
         let req = request.into_inner();
 
-        let package = match ProviderManager::package_name_from_token(&req.tok) {
+        let package = match provider::package_name_from_token(&req.tok) {
             Some(pkg) => pkg,
             None => {
-                // Built-in function, return empty.
                 return Ok(Response::new(pulumirpc::InvokeResponse {
                     r#return: Some(prost_types::Struct {
                         fields: Default::default(),
@@ -60,13 +60,13 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             }
         };
 
-        let mut client = self
+        let mut provider = self
             .providers
             .get_provider(&package)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let response = client
+        let resp = provider
             .invoke(pulumirpc::InvokeRequest {
                 tok: req.tok,
                 args: req.args,
@@ -75,7 +75,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             .await
             .map_err(|e| Status::internal(format!("provider invoke failed: {e}")))?;
 
-        Ok(Response::new(response.into_inner()))
+        Ok(Response::new(resp))
     }
 
     async fn call(
@@ -84,7 +84,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
     ) -> Result<Response<pulumirpc::CallResponse>, Status> {
         let req = request.into_inner();
 
-        let package = match ProviderManager::package_name_from_token(&req.tok) {
+        let package = match provider::package_name_from_token(&req.tok) {
             Some(pkg) => pkg,
             None => {
                 return Ok(Response::new(pulumirpc::CallResponse {
@@ -97,13 +97,13 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             }
         };
 
-        let mut client = self
+        let mut provider = self
             .providers
             .get_provider(&package)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let response = client
+        let resp = provider
             .call(pulumirpc::CallRequest {
                 tok: req.tok,
                 args: req.args,
@@ -122,7 +122,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             .await
             .map_err(|e| Status::internal(format!("provider call failed: {e}")))?;
 
-        Ok(Response::new(response.into_inner()))
+        Ok(Response::new(resp))
     }
 
     async fn read_resource(
@@ -135,16 +135,14 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             .make_urn(&req.r#type, &req.name, &req.parent)
             .await;
 
-        let package = ProviderManager::package_name(&req.r#type);
-
-        let (_id, properties) = if let Some(package) = package {
-            let mut client = self
+        let properties = if let Some(package) = provider::package_name(&req.r#type) {
+            let mut provider = self
                 .providers
                 .get_provider(&package)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
 
-            let response = client
+            let resp = provider
                 .read(pulumirpc::ReadRequest {
                     id: req.id.clone(),
                     urn: urn.clone(),
@@ -157,11 +155,9 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
                 .await
                 .map_err(|e| Status::internal(format!("provider read failed: {e}")))?;
 
-            let resp = response.into_inner();
-            (resp.id, resp.properties)
+            resp.properties
         } else {
-            // Built-in type, echo back.
-            (req.id, req.properties)
+            req.properties
         };
 
         Ok(Response::new(pulumirpc::ReadResourceResponse {
@@ -191,11 +187,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
         let prior = self.state.get_prior_resource(&urn).await;
         let diff_result = diff::diff_resource(&urn, &inputs, prior.as_ref(), &req.ignore_changes);
 
-        let package = if req.custom {
-            ProviderManager::package_name(&req.r#type)
-        } else {
-            None
-        };
+        let needs_provider = req.custom && provider::package_name(&req.r#type).is_some();
 
         // Execute the provider operation and get ID + outputs.
         let (id, output_properties) = match diff_result.action {
@@ -204,18 +196,18 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
                 (id, req.object.clone())
             }
             ResourceAction::Create => {
-                if let Some(ref package) = package {
+                if needs_provider {
                     if self.dry_run {
-                        // Preview: don't call the provider.
                         (String::new(), req.object.clone())
                     } else {
-                        let mut client = self
+                        let package = provider::package_name(&req.r#type).unwrap();
+                        let mut provider = self
                             .providers
-                            .get_provider(package)
+                            .get_provider(&package)
                             .await
                             .map_err(|e| Status::internal(e.to_string()))?;
 
-                        let response = client
+                        let resp = provider
                             .create(pulumirpc::CreateRequest {
                                 urn: urn.clone(),
                                 properties: req.object.clone(),
@@ -234,35 +226,34 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
                                 Status::internal(format!("provider create failed: {e}"))
                             })?;
 
-                        let resp = response.into_inner();
                         (resp.id, resp.properties)
                     }
                 } else {
-                    // Component resource or built-in — no provider call.
                     (String::new(), req.object.clone())
                 }
             }
             ResourceAction::Update => {
                 let prior_id = prior.as_ref().map(|p| p.id.clone()).unwrap_or_default();
 
-                if let Some(ref package) = package {
+                if needs_provider {
                     if self.dry_run {
                         (prior_id, req.object.clone())
                     } else {
-                        let mut client = self
+                        let package = provider::package_name(&req.r#type).unwrap();
+                        let mut provider = self
                             .providers
-                            .get_provider(package)
+                            .get_provider(&package)
                             .await
                             .map_err(|e| Status::internal(e.to_string()))?;
 
                         let prior_outputs = prior
                             .as_ref()
-                            .map(|p| crate::provider::json_to_proto_struct(&p.outputs));
+                            .map(|p| provider::json_to_proto_struct(&p.outputs));
                         let prior_inputs = prior
                             .as_ref()
-                            .map(|p| crate::provider::json_to_proto_struct(&p.inputs));
+                            .map(|p| provider::json_to_proto_struct(&p.inputs));
 
-                        let response = client
+                        let resp = provider
                             .update(pulumirpc::UpdateRequest {
                                 id: prior_id,
                                 urn: urn.clone(),
@@ -285,8 +276,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
                                 Status::internal(format!("provider update failed: {e}"))
                             })?;
 
-                        let resp = response.into_inner();
-                        // Update returns new properties; keep the same ID.
                         let id = prior.as_ref().map(|p| p.id.clone()).unwrap_or_default();
                         (id, resp.properties)
                     }
@@ -305,16 +294,13 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             eprintln!("[engine] {action_label}: {} ({})", urn, req.r#type);
         }
 
-        // Use provider outputs if available, otherwise fall back to inputs.
         let outputs_json = output_properties
             .as_ref()
             .map(proto_struct_to_json)
             .unwrap_or_else(|| inputs.clone());
 
-        // Collect dependencies from the request.
         let dependencies = req.dependencies.clone();
 
-        // Store the resource state.
         let resource_state = ResourceState {
             urn: urn.clone(),
             id: id.clone(),
@@ -335,7 +321,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
             stable: true,
             stables: vec![],
             property_dependencies: Default::default(),
-            result: 0, // SUCCESS
+            result: 0,
         }))
     }
 
@@ -345,7 +331,6 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
     ) -> Result<Response<()>, Status> {
         let req = request.into_inner();
 
-        // If this is the stack resource, capture the outputs.
         let root_urn = self.state.get_root_urn().await;
         if req.urn == root_urn
             && let Some(outputs) = &req.outputs

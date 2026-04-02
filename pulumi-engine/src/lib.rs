@@ -42,4 +42,5 @@ pub(crate) use pulumi_core::proto::pulumirpc;
 
 pub use error::{Error, Result};
 pub use orchestrator::{DestroyResult, EngineOptions, PulumiEngine, RefreshResult, UpResult};
+pub use provider::{GrpcProvider, Provider, ProviderManager};
 pub use state::Checkpoint;

@@ -10,7 +10,7 @@ use tonic::transport::Server;
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
-use crate::provider::{ProviderManager, json_to_proto_struct};
+use crate::provider::{self, GrpcProvider, Provider, ProviderManager, json_to_proto_struct};
 use crate::pulumirpc;
 use crate::state::{Checkpoint, EngineState};
 
@@ -88,36 +88,44 @@ pub struct RefreshResult {
     pub stderr: String,
 }
 
-/// The Rust-native Pulumi engine.
-pub struct PulumiEngine {
+/// The Rust-native Pulumi engine, parameterized over a [`Provider`] implementation.
+///
+/// Defaults to [`GrpcProvider`], which launches real provider plugin subprocesses.
+/// Substitute a different `P` (e.g. a mock) for testing without real providers.
+pub struct PulumiEngine<P: Provider = GrpcProvider> {
     options: EngineOptions,
+    providers: ProviderManager<P>,
 }
 
 impl PulumiEngine {
     pub fn new(options: EngineOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            providers: ProviderManager::new(),
+        }
+    }
+}
+
+impl<P: Provider> PulumiEngine<P> {
+    /// Create an engine with a custom provider manager (e.g. for testing).
+    pub fn with_providers(options: EngineOptions, providers: ProviderManager<P>) -> Self {
+        Self { options, providers }
     }
 
     /// Run the Pulumi program (equivalent to `pulumi up`).
-    ///
-    /// Loads prior state from the checkpoint, runs the program to register
-    /// resources (diffing against prior state), then saves the new checkpoint.
     pub async fn up(&self) -> Result<UpResult> {
         self.run_program(false).await
     }
 
     /// Run the Pulumi program in preview/dry-run mode.
-    ///
-    /// Loads prior state and runs the program, but does not persist the
-    /// resulting checkpoint.
     pub async fn preview(&self) -> Result<UpResult> {
         self.run_program(true).await
     }
 
     /// Destroy all resources in the stack.
     ///
-    /// Loads the checkpoint, calls provider.Delete for each custom resource
-    /// (in reverse dependency order), then clears the checkpoint.
+    /// Calls [`Provider::delete`] for each custom resource in reverse
+    /// dependency order, then clears the checkpoint.
     pub async fn destroy(&self) -> Result<DestroyResult> {
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = Checkpoint::load(&checkpoint_path)
@@ -136,23 +144,20 @@ impl PulumiEngine {
                 if resources.is_empty() {
                     summary.push_str("No resources to destroy.\n");
                 } else {
-                    let providers = ProviderManager::new();
-
                     // Delete in reverse order (children before parents).
                     let mut ordered: Vec<_> = cp.resources.iter().collect();
                     ordered.reverse();
 
                     for res in &ordered {
                         if res.custom {
-                            if let Some(package) = ProviderManager::package_name(&res.resource_type)
-                            {
-                                match providers.get_provider(&package).await {
-                                    Ok(mut client) => {
+                            if let Some(package) = provider::package_name(&res.resource_type) {
+                                match self.providers.get_provider(&package).await {
+                                    Ok(mut provider) => {
                                         eprintln!(
                                             "[engine] delete: {} ({})",
                                             res.urn, res.resource_type
                                         );
-                                        let delete_result = client
+                                        let delete_result = provider
                                             .delete(pulumirpc::DeleteRequest {
                                                 id: res.id.clone(),
                                                 urn: res.urn.clone(),
@@ -198,7 +203,7 @@ impl PulumiEngine {
                         }
                     }
 
-                    providers.shutdown_all().await;
+                    self.providers.shutdown_all().await;
 
                     // Save empty checkpoint.
                     let empty = state.empty_checkpoint().await;
@@ -219,9 +224,8 @@ impl PulumiEngine {
 
     /// Refresh the stack state.
     ///
-    /// Loads the checkpoint and calls provider.Read for each custom resource
-    /// to sync state with the actual cloud provider, then saves the updated
-    /// checkpoint.
+    /// Calls [`Provider::read`] for each custom resource to sync state with
+    /// the actual cloud provider, then saves the updated checkpoint.
     pub async fn refresh(&self) -> Result<RefreshResult> {
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = Checkpoint::load(&checkpoint_path)
@@ -234,17 +238,16 @@ impl PulumiEngine {
                 summary.push_str("No checkpoint found, nothing to refresh.\n");
             }
             Some(mut cp) => {
-                let providers = ProviderManager::new();
                 let mut updated_resources = Vec::new();
 
                 for res in &cp.resources {
                     eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
 
                     if res.custom {
-                        if let Some(package) = ProviderManager::package_name(&res.resource_type) {
-                            match providers.get_provider(&package).await {
-                                Ok(mut client) => {
-                                    let read_result = client
+                        if let Some(package) = provider::package_name(&res.resource_type) {
+                            match self.providers.get_provider(&package).await {
+                                Ok(mut provider) => {
+                                    let read_result = provider
                                         .read(pulumirpc::ReadRequest {
                                             id: res.id.clone(),
                                             urn: res.urn.clone(),
@@ -257,8 +260,7 @@ impl PulumiEngine {
                                         .await;
 
                                     match read_result {
-                                        Ok(response) => {
-                                            let resp = response.into_inner();
+                                        Ok(resp) => {
                                             let mut refreshed = res.clone();
                                             if !resp.id.is_empty() {
                                                 refreshed.id = resp.id;
@@ -298,12 +300,11 @@ impl PulumiEngine {
                             updated_resources.push(res.clone());
                         }
                     } else {
-                        // Component resources don't need provider reads.
                         updated_resources.push(res.clone());
                     }
                 }
 
-                providers.shutdown_all().await;
+                self.providers.shutdown_all().await;
 
                 let resource_count = updated_resources.len();
                 cp.resources = updated_resources;
@@ -332,8 +333,6 @@ impl PulumiEngine {
             }
         };
 
-        let providers = ProviderManager::new();
-
         // Bind the gRPC servers to ephemeral ports.
         let monitor_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let engine_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -348,13 +347,15 @@ impl PulumiEngine {
         let engine_addr_str = format!("127.0.0.1:{engine_port}");
 
         // Tell the provider manager where the engine is so plugins can connect.
-        providers.set_engine_addr(engine_addr_str.clone()).await;
+        self.providers
+            .set_engine_addr(engine_addr_str.clone())
+            .await;
 
         // Start the ResourceMonitor server.
         let monitor_svc = ResourceMonitorImpl::new(
             state.clone(),
             dry_run || self.options.dry_run,
-            providers.clone(),
+            self.providers.clone(),
         );
         let monitor_handle = tokio::spawn(async move {
             Server::builder()
@@ -420,7 +421,7 @@ impl PulumiEngine {
         // Abort the gRPC servers and shut down providers.
         monitor_handle.abort();
         engine_handle.abort();
-        providers.shutdown_all().await;
+        self.providers.shutdown_all().await;
 
         if !output.status.success() {
             return Err(Error::ProgramFailed {
@@ -430,18 +431,18 @@ impl PulumiEngine {
             });
         }
 
-        // Handle resources deleted from prior state (present before, not registered now).
+        // Handle resources deleted from prior state (not re-registered).
         let deleted_urns = state.get_deleted_urns().await;
         for urn in &deleted_urns {
             let prior = state.get_prior_resource(urn).await;
             if let Some(res) = prior {
                 if res.custom {
-                    if let Some(package) = ProviderManager::package_name(&res.resource_type) {
+                    if let Some(package) = provider::package_name(&res.resource_type) {
                         if !dry_run && !self.options.dry_run {
-                            match providers.get_provider(&package).await {
-                                Ok(mut client) => {
+                            match self.providers.get_provider(&package).await {
+                                Ok(mut provider) => {
                                     eprintln!("[engine] delete: {urn}");
-                                    let _ = client
+                                    let _ = provider
                                         .delete(pulumirpc::DeleteRequest {
                                             id: res.id.clone(),
                                             urn: urn.clone(),
@@ -471,7 +472,7 @@ impl PulumiEngine {
         }
 
         // Shut down any providers launched for deletes.
-        providers.shutdown_all().await;
+        self.providers.shutdown_all().await;
 
         let outputs = state.get_stack_outputs().await;
 

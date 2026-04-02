@@ -5,6 +5,8 @@ use std::fmt;
 pub enum Error {
     /// gRPC transport error.
     Transport(tonic::transport::Error),
+    /// gRPC status error from a provider operation.
+    ProviderStatus(tonic::Status),
     /// The user program exited with a non-zero status.
     ProgramFailed {
         code: i32,
@@ -21,6 +23,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Transport(e) => write!(f, "gRPC transport error: {e}"),
+            Error::ProviderStatus(s) => write!(f, "provider error: {s}"),
             Error::ProgramFailed { code, stderr, .. } => {
                 write!(f, "program failed (exit code {code}):\n{stderr}")
             }
@@ -41,6 +44,12 @@ impl From<tonic::transport::Error> for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Spawn(e)
+    }
+}
+
+impl From<tonic::Status> for Error {
+    fn from(s: tonic::Status) -> Self {
+        Error::ProviderStatus(s)
     }
 }
 
