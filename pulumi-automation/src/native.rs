@@ -65,7 +65,10 @@ impl NativeStack {
     pub async fn up(&self) -> Result<UpResult> {
         let opts = self.engine_options(false);
         let engine = PulumiEngine::new(opts);
-        let result = engine.up().await.map_err(|e| Error::Custom(e.to_string()))?;
+        let result = engine
+            .up()
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))?;
 
         let outputs = convert_outputs(&result.outputs);
 

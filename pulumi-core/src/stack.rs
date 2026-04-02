@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::error::Result;
-use crate::resource::{register_resource_inner, register_resource_outputs, ResourceOptions};
+use crate::resource::{ResourceOptions, register_resource_inner, register_resource_outputs};
 
 /// Registers the stack resource itself.
 ///

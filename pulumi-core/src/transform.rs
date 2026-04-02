@@ -9,7 +9,9 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
 use crate::proto::pulumirpc::callbacks_server::{Callbacks, CallbacksServer};
-use crate::resource::{alias_to_proto, Alias, AliasParent, AliasSpec, CustomTimeouts, ResourceOptions};
+use crate::resource::{
+    Alias, AliasParent, AliasSpec, CustomTimeouts, ResourceOptions, alias_to_proto,
+};
 use crate::serde::{json_to_struct, struct_to_json};
 
 /// The arguments passed to a resource transform function.
@@ -39,8 +41,7 @@ pub struct TransformResult {
 }
 
 /// A transform function that can modify resource registrations.
-pub type TransformFn =
-    Arc<dyn Fn(TransformArgs) -> TransformResult + Send + Sync + 'static>;
+pub type TransformFn = Arc<dyn Fn(TransformArgs) -> TransformResult + Send + Sync + 'static>;
 
 /// Internal state for the callback server.
 struct CallbackState {
@@ -72,8 +73,9 @@ impl Callbacks for CallbackService {
         drop(state);
 
         // Decode the TransformRequest from the raw bytes.
-        let transform_req = pulumirpc::TransformRequest::decode(&*req.request)
-            .map_err(|e| tonic::Status::invalid_argument(format!("failed to decode TransformRequest: {e}")))?;
+        let transform_req = pulumirpc::TransformRequest::decode(&*req.request).map_err(|e| {
+            tonic::Status::invalid_argument(format!("failed to decode TransformRequest: {e}"))
+        })?;
 
         let props = transform_req
             .properties
@@ -248,15 +250,23 @@ fn proto_opts_to_resource_options(
         } else {
             Some(opts.import.clone())
         },
-        aliases: opts
-            .aliases
-            .iter()
-            .map(proto_alias_to_alias)
-            .collect(),
+        aliases: opts.aliases.iter().map(proto_alias_to_alias).collect(),
         custom_timeouts: opts.custom_timeouts.as_ref().map(|t| CustomTimeouts {
-            create: if t.create.is_empty() { None } else { Some(t.create.clone()) },
-            update: if t.update.is_empty() { None } else { Some(t.update.clone()) },
-            delete: if t.delete.is_empty() { None } else { Some(t.delete.clone()) },
+            create: if t.create.is_empty() {
+                None
+            } else {
+                Some(t.create.clone())
+            },
+            update: if t.update.is_empty() {
+                None
+            } else {
+                Some(t.update.clone())
+            },
+            delete: if t.delete.is_empty() {
+                None
+            } else {
+                Some(t.delete.clone())
+            },
         }),
         deleted_with: if opts.deleted_with.is_empty() {
             None
@@ -301,10 +311,26 @@ fn proto_alias_to_alias(proto: &pulumirpc::Alias) -> Alias {
     match &proto.alias {
         Some(pulumirpc::alias::Alias::Urn(urn)) => Alias::Urn(urn.clone()),
         Some(pulumirpc::alias::Alias::Spec(spec)) => Alias::Spec(AliasSpec {
-            name: if spec.name.is_empty() { None } else { Some(spec.name.clone()) },
-            r#type: if spec.r#type.is_empty() { None } else { Some(spec.r#type.clone()) },
-            stack: if spec.stack.is_empty() { None } else { Some(spec.stack.clone()) },
-            project: if spec.project.is_empty() { None } else { Some(spec.project.clone()) },
+            name: if spec.name.is_empty() {
+                None
+            } else {
+                Some(spec.name.clone())
+            },
+            r#type: if spec.r#type.is_empty() {
+                None
+            } else {
+                Some(spec.r#type.clone())
+            },
+            stack: if spec.stack.is_empty() {
+                None
+            } else {
+                Some(spec.stack.clone())
+            },
+            project: if spec.project.is_empty() {
+                None
+            } else {
+                Some(spec.project.clone())
+            },
             parent: spec.parent.as_ref().map(|p| match p {
                 pulumirpc::alias::spec::Parent::ParentUrn(urn) => AliasParent::Urn(urn.clone()),
                 pulumirpc::alias::spec::Parent::NoParent(_) => AliasParent::NoParent,

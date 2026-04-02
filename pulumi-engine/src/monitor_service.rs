@@ -102,12 +102,7 @@ impl pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl
 
         // Diff against prior state to determine action.
         let prior = self.state.get_prior_resource(&urn).await;
-        let diff_result = diff::diff_resource(
-            &urn,
-            &inputs,
-            prior.as_ref(),
-            &req.ignore_changes,
-        );
+        let diff_result = diff::diff_resource(&urn, &inputs, prior.as_ref(), &req.ignore_changes);
 
         // Determine the resource ID.
         let id = match diff_result.action {

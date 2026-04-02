@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
 
-use ::serde::de::DeserializeOwned;
 use ::serde::Serialize;
+use ::serde::de::DeserializeOwned;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -399,9 +399,15 @@ impl<R: Resource> IntoFuture for ReadBuilder<R> {
 
     fn into_future(self) -> Self::IntoFuture {
         async move {
-            let result =
-                read_resource_inner(&self.ctx, R::TYPE_TOKEN, &self.name, &self.id, self.props, &self.opts)
-                    .await?;
+            let result = read_resource_inner(
+                &self.ctx,
+                R::TYPE_TOKEN,
+                &self.name,
+                &self.id,
+                self.props,
+                &self.opts,
+            )
+            .await?;
             let outputs: R::Outputs = serde_json::from_value(result.outputs)?;
             Ok(RegisteredResource {
                 urn: result.urn,
@@ -440,11 +446,7 @@ impl<C: ComponentResource> RegisteredComponent<C> {
     }
 
     /// Registers the final outputs for this component resource.
-    pub async fn register_outputs(
-        &self,
-        ctx: &Context,
-        outputs: serde_json::Value,
-    ) -> Result<()> {
+    pub async fn register_outputs(&self, ctx: &Context, outputs: serde_json::Value) -> Result<()> {
         register_resource_outputs(ctx, &self.urn, outputs).await
     }
 }

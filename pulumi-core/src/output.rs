@@ -112,9 +112,8 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         // can't be determined during preview.
         let (_tx, rx) = oneshot::channel::<Result<T, Arc<Error>>>();
         let future = async move {
-            rx.await.unwrap_or_else(|_| {
-                Err(Arc::new(Error::Custom("output value is unknown".into())))
-            })
+            rx.await
+                .unwrap_or_else(|_| Err(Arc::new(Error::Custom("output value is unknown".into()))))
         }
         .boxed()
         .shared();
@@ -214,7 +213,11 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
                     // Merge deps from the inner output.
                     {
                         let inner_deps = inner.meta.deps.lock().unwrap();
-                        out_meta.deps.lock().unwrap().extend(inner_deps.iter().cloned());
+                        out_meta
+                            .deps
+                            .lock()
+                            .unwrap()
+                            .extend(inner_deps.iter().cloned());
                     }
 
                     inner.future.await
@@ -463,10 +466,12 @@ mod tests {
         resolver.reject(Error::Custom("something went wrong".into()));
         let result = out.get().await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("something went wrong"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("something went wrong")
+        );
     }
 
     #[tokio::test]
@@ -496,10 +501,7 @@ mod tests {
         drop(resolver);
         let result = out.get().await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("resolver dropped"));
+        assert!(result.unwrap_err().to_string().contains("resolver dropped"));
     }
 
     #[tokio::test]

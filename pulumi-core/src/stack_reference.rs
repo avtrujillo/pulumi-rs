@@ -2,7 +2,7 @@ use std::future::{Future, IntoFuture};
 
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::resource::{register_resource_inner, ResourceOptions};
+use crate::resource::{ResourceOptions, register_resource_inner};
 
 /// A reference to another Pulumi stack's outputs.
 ///
@@ -36,11 +36,9 @@ impl StackReference {
 
     /// Gets a required output value by key, returning an error if missing.
     pub fn require_output<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<T> {
-        let val = self.get_output(key).ok_or_else(|| {
-            Error::Custom(format!(
-                "stack reference output {key:?} not found"
-            ))
-        })?;
+        let val = self
+            .get_output(key)
+            .ok_or_else(|| Error::Custom(format!("stack reference output {key:?} not found")))?;
         serde_json::from_value(val.clone())
             .map_err(|e| Error::Custom(format!("stack reference output {key:?}: {e}")))
     }

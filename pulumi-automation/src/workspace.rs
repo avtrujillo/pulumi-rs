@@ -65,12 +65,8 @@ impl LocalWorkspace {
 
     /// Creates a new stack and returns a handle to it.
     pub async fn create_stack(&self, name: &str) -> Result<Stack> {
-        let result = run_pulumi_cmd(
-            &self.work_dir,
-            &["stack", "init", name],
-            &self.env_pairs(),
-        )
-        .await;
+        let result =
+            run_pulumi_cmd(&self.work_dir, &["stack", "init", name], &self.env_pairs()).await;
 
         match result {
             Ok(_) => Ok(Stack::new(self.clone(), name.to_string())),
@@ -158,10 +154,7 @@ impl LocalWorkspace {
     }
 
     /// Gets all configuration values for the given stack.
-    pub async fn get_all_config(
-        &self,
-        stack: &str,
-    ) -> Result<HashMap<String, ConfigValue>> {
+    pub async fn get_all_config(&self, stack: &str) -> Result<HashMap<String, ConfigValue>> {
         let output = run_pulumi_cmd(
             &self.work_dir,
             &["config", "--stack", stack, "--json"],
@@ -190,11 +183,7 @@ impl LocalWorkspace {
     ///
     /// Requires the `native-engine` feature.
     #[cfg(feature = "native-engine")]
-    pub fn native_stack(
-        &self,
-        name: &str,
-        program: Vec<String>,
-    ) -> crate::native::NativeStack {
+    pub fn native_stack(&self, name: &str, program: Vec<String>) -> crate::native::NativeStack {
         crate::native::NativeStack::new(self.clone(), name.to_string(), program)
     }
 }

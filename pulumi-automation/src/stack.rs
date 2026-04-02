@@ -208,7 +208,14 @@ impl Stack {
         // Use `echo | pulumi stack import` via shell
         run_pulumi_cmd(
             self.workspace.work_dir(),
-            &["stack", "import", "--stack", &self.name, "--file", "/dev/stdin"],
+            &[
+                "stack",
+                "import",
+                "--stack",
+                &self.name,
+                "--file",
+                "/dev/stdin",
+            ],
             &[],
         )
         .await

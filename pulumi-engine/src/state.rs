@@ -51,10 +51,8 @@ impl Checkpoint {
     pub fn load(path: &Path) -> Result<Option<Self>, std::io::Error> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
-                let checkpoint: Checkpoint =
-                    serde_json::from_str(&contents).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                    })?;
+                let checkpoint: Checkpoint = serde_json::from_str(&contents)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 Ok(Some(checkpoint))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -149,10 +147,7 @@ impl EngineState {
                 inner.stack, inner.project, resource_type, name
             )
         } else {
-            let parent_type = parent
-                .split("::")
-                .nth(2)
-                .unwrap_or("pulumi:pulumi:Stack");
+            let parent_type = parent.split("::").nth(2).unwrap_or("pulumi:pulumi:Stack");
             format!(
                 "urn:pulumi:{}::{}::{}${}::{}",
                 inner.stack, inner.project, parent_type, resource_type, name
