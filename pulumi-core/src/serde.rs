@@ -97,7 +97,7 @@ pub fn wrap_secret(value: serde_json::Value) -> serde_json::Value {
 
 /// Checks if a protobuf Struct value represents a Pulumi secret.
 pub fn is_secret(s: &Struct) -> bool {
-    s.fields.get("4dabf18193072939515e22adb298388d").is_some()
+    s.fields.contains_key("4dabf18193072939515e22adb298388d")
 }
 
 /// Unwraps a Pulumi secret, returning the inner value.
@@ -111,10 +111,10 @@ pub fn unwrap_secret(s: &Struct) -> Option<&Value> {
 
 /// Checks if a protobuf Struct value represents an unknown value.
 pub fn is_unknown(s: &Struct) -> bool {
-    if let Some(sig) = s.fields.get("4dabf18193072939515e22adb298388d") {
-        if let Some(Kind::StringValue(v)) = &sig.kind {
-            return v == UNKNOWN_SIG;
-        }
+    if let Some(sig) = s.fields.get("4dabf18193072939515e22adb298388d")
+        && let Some(Kind::StringValue(v)) = &sig.kind
+    {
+        return v == UNKNOWN_SIG;
     }
     false
 }

@@ -244,13 +244,11 @@ async fn invoke_inner(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.invoke(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().invoke(req).await?;
 
     // Check for failures.
-    if !inner.failures.is_empty() {
-        let failures: Vec<(String, String)> = inner
+    if !resp.failures.is_empty() {
+        let failures: Vec<(String, String)> = resp
             .failures
             .iter()
             .map(|f| (f.property.clone(), f.reason.clone()))
@@ -261,7 +259,7 @@ async fn invoke_inner(
         });
     }
 
-    let result = inner
+    let result = resp
         .r#return
         .as_ref()
         .map(struct_to_json)
@@ -304,12 +302,10 @@ async fn call_inner<A: Serialize + Send>(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.call(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().call(req).await?;
 
-    if !inner.failures.is_empty() {
-        let failures: Vec<(String, String)> = inner
+    if !resp.failures.is_empty() {
+        let failures: Vec<(String, String)> = resp
             .failures
             .iter()
             .map(|f| (f.property.clone(), f.reason.clone()))
@@ -320,13 +316,13 @@ async fn call_inner<A: Serialize + Send>(
         });
     }
 
-    let result = inner
+    let result = resp
         .r#return
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
-    let return_deps = inner
+    let return_deps = resp
         .return_dependencies
         .into_iter()
         .map(|(k, v)| (k, v.urns))

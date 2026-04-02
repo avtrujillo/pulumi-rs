@@ -1,5 +1,6 @@
 use crate::context::Context;
 use crate::error::Result;
+use crate::proto::pulumirpc;
 use crate::resource::{ResourceOptions, register_resource_inner, register_resource_outputs};
 
 /// Registers the stack resource itself.
@@ -21,9 +22,8 @@ pub(crate) async fn register_stack(ctx: &Context) -> Result<String> {
     .await?;
 
     // Set the root resource URN in the engine.
-    let mut engine = ctx.engine().await;
-    engine
-        .set_root_resource(crate::proto::pulumirpc::SetRootResourceRequest {
+    ctx.engine()
+        .set_root_resource(pulumirpc::SetRootResourceRequest {
             urn: result.urn.clone(),
         })
         .await?;

@@ -1,4 +1,5 @@
 #![feature(impl_trait_in_assoc_type)]
+#![allow(clippy::result_large_err)]
 
 //! # Pulumi SDK for Rust
 //!
@@ -67,6 +68,7 @@
 //! - [`InvokeBuilder`] — Builder to invoke a [`ProviderFunction`]; implements [`IntoFuture`](std::future::IntoFuture)
 //! - [`Error`] / [`Result`] — Error handling
 
+pub mod connection;
 pub mod context;
 pub mod error;
 pub mod invoke;
@@ -88,6 +90,7 @@ pub mod proto {
 }
 
 // Re-export core types at the crate root.
+pub use connection::{EngineConnection, MockEngine, MockMonitor, MonitorConnection};
 pub use context::Context;
 pub use error::{Error, Result};
 pub use invoke::{

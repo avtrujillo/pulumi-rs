@@ -711,32 +711,30 @@ pub(crate) async fn register_resource_inner(
         env_var_mappings: HashMap::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.register_resource(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().register_resource(req).await?;
 
     // Check if the registration was reported as failed.
-    if inner.result == pulumirpc::Result::Fail as i32 {
+    if resp.result == pulumirpc::Result::Fail as i32 {
         return Err(Error::ResourceFailed {
-            urn: inner.urn.clone(),
+            urn: resp.urn.clone(),
         });
     }
 
-    let outputs = inner
+    let outputs = resp
         .object
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
-    let property_deps = inner
+    let property_deps = resp
         .property_dependencies
         .iter()
         .map(|(k, v)| (k.clone(), v.urns.clone()))
         .collect();
 
     Ok(ResourceResult {
-        urn: inner.urn,
-        id: inner.id,
+        urn: resp.urn,
+        id: resp.id,
         outputs,
         property_deps,
     })
@@ -754,8 +752,7 @@ pub(crate) async fn register_resource_outputs(
         outputs: Some(outputs_struct),
     };
 
-    let mut monitor = ctx.monitor().await;
-    monitor.register_resource_outputs(req).await?;
+    ctx.monitor().register_resource_outputs(req).await?;
 
     Ok(())
 }
@@ -792,18 +789,16 @@ async fn read_resource_inner(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.read_resource(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().read_resource(req).await?;
 
-    let outputs = inner
+    let outputs = resp
         .properties
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
     Ok(ResourceResult {
-        urn: inner.urn,
+        urn: resp.urn,
         id: id.to_string(),
         outputs,
         property_deps: HashMap::new(),

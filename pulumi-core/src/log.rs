@@ -38,10 +38,7 @@ async fn log_message(
         ephemeral,
     };
 
-    let mut engine = ctx.engine().await;
-    engine.log(req).await?;
-
-    Ok(())
+    ctx.engine().log(req).await
 }
 
 /// Logs a debug message.
