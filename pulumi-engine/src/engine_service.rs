@@ -18,10 +18,7 @@ impl EngineServiceImpl {
 
 #[tonic::async_trait]
 impl pulumirpc::engine_server::Engine for EngineServiceImpl {
-    async fn log(
-        &self,
-        request: Request<pulumirpc::LogRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn log(&self, request: Request<pulumirpc::LogRequest>) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         let severity = match req.severity {
             0 => "DEBUG",

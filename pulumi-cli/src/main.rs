@@ -6,7 +6,10 @@ use clap::{Parser, Subcommand};
 use pulumi_automation::LocalWorkspace;
 
 #[derive(Parser)]
-#[command(name = "pulumi-rs", about = "Rust-native CLI for Pulumi stack operations")]
+#[command(
+    name = "pulumi-rs",
+    about = "Rust-native CLI for Pulumi stack operations"
+)]
 struct Cli {
     /// Path to the Pulumi project directory.
     #[arg(short, long, default_value = ".")]
@@ -145,12 +148,10 @@ async fn main() {
             }
         }
         Commands::Stack { command } => match command {
-            StackCommands::Init { name } => {
-                ws.create_stack(&name).await.map(|_| ()).map_err(|e| {
-                    eprintln!("Error creating stack: {e}");
-                    e
-                })
-            }
+            StackCommands::Init { name } => ws.create_stack(&name).await.map(|_| ()).map_err(|e| {
+                eprintln!("Error creating stack: {e}");
+                e
+            }),
             StackCommands::Ls => match ws.list_stacks().await {
                 Ok(stacks) => {
                     for s in &stacks {
@@ -161,9 +162,7 @@ async fn main() {
                 }
                 Err(e) => Err(e),
             },
-            StackCommands::Rm { name, force } => {
-                ws.remove_stack(&name, force).await
-            }
+            StackCommands::Rm { name, force } => ws.remove_stack(&name, force).await,
             StackCommands::Output { stack } => {
                 let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
                     eprintln!("Error selecting stack: {e}");

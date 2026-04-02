@@ -15,12 +15,18 @@ pub struct ConfigValue {
 impl ConfigValue {
     /// Creates a plaintext config value.
     pub fn plaintext(value: impl Into<String>) -> Self {
-        Self { value: value.into(), secret: false }
+        Self {
+            value: value.into(),
+            secret: false,
+        }
     }
 
     /// Creates a secret config value.
     pub fn secret(value: impl Into<String>) -> Self {
-        Self { value: value.into(), secret: true }
+        Self {
+            value: value.into(),
+            secret: true,
+        }
     }
 }
 

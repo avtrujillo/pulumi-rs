@@ -34,14 +34,13 @@ pub struct Settings {
 impl Settings {
     /// Reads settings from the environment variables set by the Pulumi engine.
     pub fn from_env() -> Result<Self> {
-        let monitor_addr = std::env::var("PULUMI_MONITOR")
-            .map_err(|_| Error::MissingEnv("PULUMI_MONITOR"))?;
+        let monitor_addr =
+            std::env::var("PULUMI_MONITOR").map_err(|_| Error::MissingEnv("PULUMI_MONITOR"))?;
         let engine_addr =
             std::env::var("PULUMI_ENGINE").map_err(|_| Error::MissingEnv("PULUMI_ENGINE"))?;
         let project =
             std::env::var("PULUMI_PROJECT").map_err(|_| Error::MissingEnv("PULUMI_PROJECT"))?;
-        let stack =
-            std::env::var("PULUMI_STACK").map_err(|_| Error::MissingEnv("PULUMI_STACK"))?;
+        let stack = std::env::var("PULUMI_STACK").map_err(|_| Error::MissingEnv("PULUMI_STACK"))?;
         let dry_run = std::env::var("PULUMI_DRY_RUN")
             .map(|v| v == "true")
             .unwrap_or(false);
@@ -146,7 +145,10 @@ impl Settings {
     ///
     /// Returns `None` if the key is missing. Returns an error if the value
     /// cannot be parsed as JSON or deserialized into `T`.
-    pub fn get_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+    pub fn get_config_object<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>> {
         match self.get_config(key) {
             None => Ok(None),
             Some(v) => serde_json::from_str(v)
@@ -219,11 +221,7 @@ impl Context {
             .await?;
         let root_urn = {
             let urn = root_resp.into_inner().urn;
-            if urn.is_empty() {
-                None
-            } else {
-                Some(urn)
-            }
+            if urn.is_empty() { None } else { Some(urn) }
         };
 
         let ctx = Context {
@@ -313,7 +311,10 @@ impl Context {
     ///
     /// Returns `None` if the key is missing. Returns an error if the value
     /// cannot be parsed as JSON or deserialized into `T`.
-    pub fn get_config_object<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+    pub fn get_config_object<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>> {
         self.settings.get_config_object(key)
     }
 
@@ -333,9 +334,7 @@ impl Context {
     }
 
     /// Returns a clone of the resource monitor client for internal use.
-    pub(crate) async fn monitor(
-        &self,
-    ) -> ResourceMonitorClient<tonic::transport::Channel> {
+    pub(crate) async fn monitor(&self) -> ResourceMonitorClient<tonic::transport::Channel> {
         self.inner.lock().await.monitor.clone()
     }
 
@@ -364,9 +363,8 @@ fn to_endpoint(addr: &str) -> Result<tonic::transport::Endpoint> {
     } else {
         format!("http://{addr}")
     };
-    tonic::transport::Endpoint::from_shared(uri).map_err(|e| {
-        Error::Custom(format!("invalid endpoint address: {e}"))
-    })
+    tonic::transport::Endpoint::from_shared(uri)
+        .map_err(|e| Error::Custom(format!("invalid endpoint address: {e}")))
 }
 
 #[cfg(test)]
@@ -451,7 +449,11 @@ mod tests {
         let tags: HashMap<String, String> = s.get_config_object("app:tags").unwrap().unwrap();
         assert_eq!(tags.get("env").unwrap(), "prod");
         assert_eq!(tags.get("team").unwrap(), "infra");
-        assert_eq!(s.get_config_object::<HashMap<String, String>>("app:missing").unwrap(), None);
+        assert_eq!(
+            s.get_config_object::<HashMap<String, String>>("app:missing")
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

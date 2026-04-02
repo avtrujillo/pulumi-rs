@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
 
-use ::serde::de::DeserializeOwned;
 use ::serde::Serialize;
+use ::serde::de::DeserializeOwned;
 
 use crate::context::Context;
 use crate::error::{Error, Result};

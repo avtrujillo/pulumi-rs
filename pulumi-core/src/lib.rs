@@ -90,15 +90,17 @@ pub mod proto {
 // Re-export core types at the crate root.
 pub use context::Context;
 pub use error::{Error, Result};
-pub use invoke::{CallBuilder, CallResult, ComponentMethod, InvokeBuilder, InvokeOptions, ProviderFunction};
-pub use output::{all, all2, all3, from_future, Output};
+pub use invoke::{
+    CallBuilder, CallResult, ComponentMethod, InvokeBuilder, InvokeOptions, ProviderFunction,
+};
+pub use output::{Output, all, all2, all3, from_future};
 pub use resource::{
     Alias, AliasParent, AliasSpec, ComponentBuilder, ComponentResource, CustomTimeouts,
     ReadBuilder, RegisteredComponent, RegisteredRemoteComponent, RegisteredResource,
     RemoteComponent, RemoteComponentBuilder, Resource, ResourceBuilder, ResourceOptions,
 };
 pub use stack_reference::{StackReference, StackReferenceBuilder};
-pub use transform::{register_stack_transform, TransformArgs, TransformFn, TransformResult};
+pub use transform::{TransformArgs, TransformFn, TransformResult, register_stack_transform};
 
 /// Runs a Pulumi program.
 ///

@@ -21,11 +21,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Transport(e) => write!(f, "gRPC transport error: {e}"),
-            Error::ProgramFailed {
-                code,
-                stderr,
-                ..
-            } => write!(f, "program failed (exit code {code}):\n{stderr}"),
+            Error::ProgramFailed { code, stderr, .. } => {
+                write!(f, "program failed (exit code {code}):\n{stderr}")
+            }
             Error::Spawn(e) => write!(f, "failed to spawn program: {e}"),
             Error::Custom(msg) => write!(f, "{msg}"),
         }

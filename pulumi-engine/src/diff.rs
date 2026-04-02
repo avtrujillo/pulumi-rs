@@ -74,7 +74,7 @@ fn has_changes(
                 match old_map.get(k) {
                     Some(old_v) if old_v == new_v => {}
                     Some(_) => return true, // Changed
-                    None => return true,     // Added
+                    None => return true,    // Added
                 }
             }
             // Check for keys in old that are missing from new (excluding ignored).

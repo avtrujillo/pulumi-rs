@@ -14,7 +14,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 /// Derives the `Resource` trait for a custom cloud resource.
 ///
@@ -65,9 +65,12 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     let type_token = match &attrs.type_token {
         Some(t) => t.clone(),
         None => {
-            return syn::Error::new_spanned(&input.ident, "missing #[pulumi(type_token = \"...\")]")
-                .to_compile_error()
-                .into()
+            return syn::Error::new_spanned(
+                &input.ident,
+                "missing #[pulumi(type_token = \"...\")]",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -76,7 +79,7 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new_spanned(&input.ident, "missing #[pulumi(inputs = Type)]")
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -85,7 +88,7 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new_spanned(&input.ident, "missing #[pulumi(outputs = Type)]")
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -133,9 +136,12 @@ pub fn derive_component_resource(input: TokenStream) -> TokenStream {
     let type_token = match &attrs.type_token {
         Some(t) => t.clone(),
         None => {
-            return syn::Error::new_spanned(&input.ident, "missing #[pulumi(type_token = \"...\")]")
-                .to_compile_error()
-                .into()
+            return syn::Error::new_spanned(
+                &input.ident,
+                "missing #[pulumi(type_token = \"...\")]",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -200,7 +206,7 @@ pub fn derive_provider_function(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new_spanned(&input.ident, "missing #[pulumi(token = \"...\")]")
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -209,7 +215,7 @@ pub fn derive_provider_function(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new_spanned(&input.ident, "missing #[pulumi(args = Type)]")
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -218,7 +224,7 @@ pub fn derive_provider_function(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new_spanned(&input.ident, "missing #[pulumi(returns = Type)]")
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -304,7 +310,10 @@ fn parse_pulumi_attrs(input: &DeriveInput) -> syn::Result<PulumiAttrs> {
             } else {
                 return Err(meta.error(format!(
                     "unknown pulumi attribute: {}",
-                    meta.path.get_ident().map(|i| i.to_string()).unwrap_or_default()
+                    meta.path
+                        .get_ident()
+                        .map(|i| i.to_string())
+                        .unwrap_or_default()
                 )));
             }
             Ok(())

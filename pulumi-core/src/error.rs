@@ -14,7 +14,10 @@ pub enum Error {
     /// A resource registration failure.
     ResourceFailed { urn: String },
     /// A provider invoke returned check failures.
-    InvokeFailure { token: String, failures: Vec<(String, String)> },
+    InvokeFailure {
+        token: String,
+        failures: Vec<(String, String)>,
+    },
     /// A custom error message.
     Custom(String),
 }

@@ -120,9 +120,8 @@ impl PulumiEngine {
     /// calls are not yet implemented — this only updates state.
     pub async fn destroy(&self) -> Result<DestroyResult> {
         let checkpoint_path = self.options.checkpoint_path();
-        let checkpoint = Checkpoint::load(&checkpoint_path).map_err(|e| {
-            Error::Custom(format!("failed to load checkpoint: {e}"))
-        })?;
+        let checkpoint = Checkpoint::load(&checkpoint_path)
+            .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))?;
 
         let mut summary = String::new();
 
@@ -155,14 +154,11 @@ impl PulumiEngine {
 
                     // Save empty checkpoint.
                     let empty = state.empty_checkpoint().await;
-                    empty.save(&checkpoint_path).map_err(|e| {
-                        Error::Custom(format!("failed to save checkpoint: {e}"))
-                    })?;
+                    empty
+                        .save(&checkpoint_path)
+                        .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
 
-                    summary.push_str(&format!(
-                        "\nDestroyed {} resource(s).\n",
-                        urns.len()
-                    ));
+                    summary.push_str(&format!("\nDestroyed {} resource(s).\n", urns.len()));
                 }
             }
         }
@@ -180,9 +176,8 @@ impl PulumiEngine {
     /// validates and re-saves the checkpoint.
     pub async fn refresh(&self) -> Result<RefreshResult> {
         let checkpoint_path = self.options.checkpoint_path();
-        let checkpoint = Checkpoint::load(&checkpoint_path).map_err(|e| {
-            Error::Custom(format!("failed to load checkpoint: {e}"))
-        })?;
+        let checkpoint = Checkpoint::load(&checkpoint_path)
+            .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))?;
 
         let mut summary = String::new();
 
@@ -198,9 +193,8 @@ impl PulumiEngine {
                     eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
                 }
 
-                cp.save(&checkpoint_path).map_err(|e| {
-                    Error::Custom(format!("failed to save checkpoint: {e}"))
-                })?;
+                cp.save(&checkpoint_path)
+                    .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
 
                 summary.push_str(&format!("Refreshed {resource_count} resource(s).\n"));
             }
@@ -218,9 +212,7 @@ impl PulumiEngine {
         // Load prior state from checkpoint.
         let state = match Checkpoint::load(&checkpoint_path) {
             Ok(Some(cp)) => EngineState::from_checkpoint(&cp),
-            Ok(None) => {
-                EngineState::new(self.options.project.clone(), self.options.stack.clone())
-            }
+            Ok(None) => EngineState::new(self.options.project.clone(), self.options.stack.clone()),
             Err(e) => {
                 return Err(Error::Custom(format!("failed to load checkpoint: {e}")));
             }
@@ -325,9 +317,9 @@ impl PulumiEngine {
         // Save checkpoint (unless dry run).
         if !dry_run && !self.options.dry_run {
             let checkpoint = state.to_checkpoint().await;
-            checkpoint.save(&checkpoint_path).map_err(|e| {
-                Error::Custom(format!("failed to save checkpoint: {e}"))
-            })?;
+            checkpoint
+                .save(&checkpoint_path)
+                .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
         }
 
         Ok(UpResult {
