@@ -10,6 +10,7 @@ use tonic::transport::Server;
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
+use crate::provider::{self, GrpcProvider, Provider, ProviderManager, json_to_proto_struct};
 use crate::pulumirpc;
 use crate::state::{Checkpoint, EngineState};
 
@@ -87,37 +88,44 @@ pub struct RefreshResult {
     pub stderr: String,
 }
 
-/// The Rust-native Pulumi engine.
-pub struct PulumiEngine {
+/// The Rust-native Pulumi engine, parameterized over a [`Provider`] implementation.
+///
+/// Defaults to [`GrpcProvider`], which launches real provider plugin subprocesses.
+/// Substitute a different `P` (e.g. a mock) for testing without real providers.
+pub struct PulumiEngine<P: Provider = GrpcProvider> {
     options: EngineOptions,
+    providers: ProviderManager<P>,
 }
 
 impl PulumiEngine {
     pub fn new(options: EngineOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            providers: ProviderManager::new(),
+        }
+    }
+}
+
+impl<P: Provider> PulumiEngine<P> {
+    /// Create an engine with a custom provider manager (e.g. for testing).
+    pub fn with_providers(options: EngineOptions, providers: ProviderManager<P>) -> Self {
+        Self { options, providers }
     }
 
     /// Run the Pulumi program (equivalent to `pulumi up`).
-    ///
-    /// Loads prior state from the checkpoint, runs the program to register
-    /// resources (diffing against prior state), then saves the new checkpoint.
     pub async fn up(&self) -> Result<UpResult> {
         self.run_program(false).await
     }
 
     /// Run the Pulumi program in preview/dry-run mode.
-    ///
-    /// Loads prior state and runs the program, but does not persist the
-    /// resulting checkpoint.
     pub async fn preview(&self) -> Result<UpResult> {
         self.run_program(true).await
     }
 
     /// Destroy all resources in the stack.
     ///
-    /// Loads the checkpoint, logs each resource that would be deleted (in
-    /// reverse dependency order), then clears the checkpoint. Provider delete
-    /// calls are not yet implemented — this only updates state.
+    /// Calls [`Provider::delete`] for each custom resource in reverse
+    /// dependency order, then clears the checkpoint.
     pub async fn destroy(&self) -> Result<DestroyResult> {
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = Checkpoint::load(&checkpoint_path)
@@ -137,20 +145,65 @@ impl PulumiEngine {
                     summary.push_str("No resources to destroy.\n");
                 } else {
                     // Delete in reverse order (children before parents).
-                    let mut urns: Vec<_> = cp.resources.iter().map(|r| &r.urn).collect();
-                    urns.reverse();
+                    let mut ordered: Vec<_> = cp.resources.iter().collect();
+                    ordered.reverse();
 
-                    for urn in &urns {
-                        if let Some(res) = resources.get(*urn) {
-                            // TODO: Call provider.Delete for custom resources.
-                            let action = if res.custom { "delete" } else { "remove" };
-                            eprintln!("[engine] {action}: {} ({})", urn, res.resource_type);
+                    for res in &ordered {
+                        if res.custom {
+                            if let Some(package) = provider::package_name(&res.resource_type) {
+                                match self.providers.get_provider(&package).await {
+                                    Ok(mut provider) => {
+                                        eprintln!(
+                                            "[engine] delete: {} ({})",
+                                            res.urn, res.resource_type
+                                        );
+                                        let delete_result = provider
+                                            .delete(pulumirpc::DeleteRequest {
+                                                id: res.id.clone(),
+                                                urn: res.urn.clone(),
+                                                properties: Some(json_to_proto_struct(
+                                                    &res.outputs,
+                                                )),
+                                                timeout: 0.0,
+                                                old_inputs: Some(json_to_proto_struct(&res.inputs)),
+                                                name: res.name.clone(),
+                                                r#type: res.resource_type.clone(),
+                                                ..Default::default()
+                                            })
+                                            .await;
+                                        if let Err(e) = delete_result {
+                                            eprintln!(
+                                                "[engine] warning: delete failed for {}: {e}",
+                                                res.urn
+                                            );
+                                        }
+                                        summary.push_str(&format!(
+                                            "- delete {} ({})\n",
+                                            res.name, res.resource_type
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[engine] warning: could not connect to provider for {}: {e}",
+                                            res.resource_type
+                                        );
+                                        summary.push_str(&format!(
+                                            "- delete {} ({}) [provider unavailable]\n",
+                                            res.name, res.resource_type
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("[engine] remove: {} ({})", res.urn, res.resource_type);
                             summary.push_str(&format!(
-                                "- {action} {} ({})\n",
+                                "- remove {} ({})\n",
                                 res.name, res.resource_type
                             ));
                         }
                     }
+
+                    self.providers.shutdown_all().await;
 
                     // Save empty checkpoint.
                     let empty = state.empty_checkpoint().await;
@@ -158,7 +211,7 @@ impl PulumiEngine {
                         .save(&checkpoint_path)
                         .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
 
-                    summary.push_str(&format!("\nDestroyed {} resource(s).\n", urns.len()));
+                    summary.push_str(&format!("\nDestroyed {} resource(s).\n", ordered.len()));
                 }
             }
         }
@@ -171,9 +224,8 @@ impl PulumiEngine {
 
     /// Refresh the stack state.
     ///
-    /// Loads the checkpoint and re-reads each resource's current state.
-    /// Provider read calls are not yet implemented — this currently just
-    /// validates and re-saves the checkpoint.
+    /// Calls [`Provider::read`] for each custom resource to sync state with
+    /// the actual cloud provider, then saves the updated checkpoint.
     pub async fn refresh(&self) -> Result<RefreshResult> {
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = Checkpoint::load(&checkpoint_path)
@@ -185,14 +237,77 @@ impl PulumiEngine {
             None => {
                 summary.push_str("No checkpoint found, nothing to refresh.\n");
             }
-            Some(cp) => {
-                let resource_count = cp.resources.len();
-                // TODO: For each resource, call provider.Read to get current state.
-                // For now, just re-save the checkpoint as-is.
+            Some(mut cp) => {
+                let mut updated_resources = Vec::new();
+
                 for res in &cp.resources {
                     eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
+
+                    if res.custom {
+                        if let Some(package) = provider::package_name(&res.resource_type) {
+                            match self.providers.get_provider(&package).await {
+                                Ok(mut provider) => {
+                                    let read_result = provider
+                                        .read(pulumirpc::ReadRequest {
+                                            id: res.id.clone(),
+                                            urn: res.urn.clone(),
+                                            properties: Some(json_to_proto_struct(&res.outputs)),
+                                            inputs: Some(json_to_proto_struct(&res.inputs)),
+                                            name: res.name.clone(),
+                                            r#type: res.resource_type.clone(),
+                                            ..Default::default()
+                                        })
+                                        .await;
+
+                                    match read_result {
+                                        Ok(resp) => {
+                                            let mut refreshed = res.clone();
+                                            if !resp.id.is_empty() {
+                                                refreshed.id = resp.id;
+                                            }
+                                            if let Some(props) = resp.properties {
+                                                refreshed.outputs =
+                                                    crate::monitor_service::proto_struct_to_json(
+                                                        &props,
+                                                    );
+                                            }
+                                            if let Some(inputs) = resp.inputs {
+                                                refreshed.inputs =
+                                                    crate::monitor_service::proto_struct_to_json(
+                                                        &inputs,
+                                                    );
+                                            }
+                                            updated_resources.push(refreshed);
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[engine] warning: refresh read failed for {}: {e}",
+                                                res.urn
+                                            );
+                                            updated_resources.push(res.clone());
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[engine] warning: could not connect to provider for {}: {e}",
+                                        res.resource_type
+                                    );
+                                    updated_resources.push(res.clone());
+                                }
+                            }
+                        } else {
+                            updated_resources.push(res.clone());
+                        }
+                    } else {
+                        updated_resources.push(res.clone());
+                    }
                 }
 
+                self.providers.shutdown_all().await;
+
+                let resource_count = updated_resources.len();
+                cp.resources = updated_resources;
                 cp.save(&checkpoint_path)
                     .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
 
@@ -231,8 +346,17 @@ impl PulumiEngine {
         let monitor_addr_str = format!("127.0.0.1:{monitor_port}");
         let engine_addr_str = format!("127.0.0.1:{engine_port}");
 
+        // Tell the provider manager where the engine is so plugins can connect.
+        self.providers
+            .set_engine_addr(engine_addr_str.clone())
+            .await;
+
         // Start the ResourceMonitor server.
-        let monitor_svc = ResourceMonitorImpl::new(state.clone(), dry_run || self.options.dry_run);
+        let monitor_svc = ResourceMonitorImpl::new(
+            state.clone(),
+            dry_run || self.options.dry_run,
+            self.providers.clone(),
+        );
         let monitor_handle = tokio::spawn(async move {
             Server::builder()
                 .add_service(
@@ -294,9 +418,10 @@ impl PulumiEngine {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-        // Abort the gRPC servers.
+        // Abort the gRPC servers and shut down providers.
         monitor_handle.abort();
         engine_handle.abort();
+        self.providers.shutdown_all().await;
 
         if !output.status.success() {
             return Err(Error::ProgramFailed {
@@ -306,11 +431,48 @@ impl PulumiEngine {
             });
         }
 
-        // Log resources deleted from prior state (present before, not registered now).
+        // Handle resources deleted from prior state (not re-registered).
         let deleted_urns = state.get_deleted_urns().await;
         for urn in &deleted_urns {
-            eprintln!("[engine] delete: {urn}");
+            let prior = state.get_prior_resource(urn).await;
+            if let Some(res) = prior {
+                if res.custom {
+                    if let Some(package) = provider::package_name(&res.resource_type) {
+                        if !dry_run && !self.options.dry_run {
+                            match self.providers.get_provider(&package).await {
+                                Ok(mut provider) => {
+                                    eprintln!("[engine] delete: {urn}");
+                                    let _ = provider
+                                        .delete(pulumirpc::DeleteRequest {
+                                            id: res.id.clone(),
+                                            urn: urn.clone(),
+                                            properties: Some(json_to_proto_struct(&res.outputs)),
+                                            timeout: 0.0,
+                                            old_inputs: Some(json_to_proto_struct(&res.inputs)),
+                                            name: res.name.clone(),
+                                            r#type: res.resource_type.clone(),
+                                            ..Default::default()
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[engine] warning: could not delete {urn}: {e}");
+                                }
+                            }
+                        } else {
+                            eprintln!("[engine] delete (preview): {urn}");
+                        }
+                    }
+                } else {
+                    eprintln!("[engine] delete: {urn}");
+                }
+            } else {
+                eprintln!("[engine] delete: {urn}");
+            }
         }
+
+        // Shut down any providers launched for deletes.
+        self.providers.shutdown_all().await;
 
         let outputs = state.get_stack_outputs().await;
 
