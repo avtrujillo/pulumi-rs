@@ -1,3 +1,4 @@
+use crate::connection::{EngineConnection, MonitorConnection};
 use crate::context::Context;
 use crate::error::Result;
 use crate::proto::pulumirpc;
@@ -7,7 +8,9 @@ use crate::resource::{ResourceOptions, register_resource_inner, register_resourc
 ///
 /// This is called automatically by [`crate::run`] to create the root stack resource.
 /// The returned URN is set as the root resource in the engine.
-pub(crate) async fn register_stack(ctx: &Context) -> Result<String> {
+pub(crate) async fn register_stack<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+) -> Result<String> {
     let stack_name = format!("{}-{}", ctx.project(), ctx.stack());
 
     let result = register_resource_inner(
@@ -35,8 +38,8 @@ pub(crate) async fn register_stack(ctx: &Context) -> Result<String> {
 ///
 /// Stack outputs are values that are exported from the Pulumi program and
 /// can be referenced by other stacks or viewed in the Pulumi console.
-pub async fn export_outputs(
-    ctx: &Context,
+pub async fn export_outputs<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     stack_urn: &str,
     outputs: serde_json::Value,
 ) -> Result<()> {

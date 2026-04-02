@@ -90,7 +90,9 @@ pub mod proto {
 }
 
 // Re-export core types at the crate root.
-pub use connection::{EngineConnection, MockEngine, MockMonitor, MonitorConnection};
+pub use connection::{
+    EngineConnection, GrpcEngine, GrpcMonitor, MockEngine, MockMonitor, MonitorConnection,
+};
 pub use context::Context;
 pub use error::{Error, Result};
 pub use invoke::{

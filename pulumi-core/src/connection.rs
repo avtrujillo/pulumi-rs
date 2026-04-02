@@ -3,17 +3,16 @@
 //! [`MonitorConnection`] and [`EngineConnection`] define the operations that
 //! the SDK needs from the engine, allowing concrete gRPC clients to be swapped
 //! out for mocks in tests.
+//!
+//! Trait methods use RPITIT (return-position `impl Trait` in traits) for
+//! zero-cost async dispatch — no boxing, no vtables.
 
 use std::future::Future;
-use std::pin::Pin;
 
 use tonic::transport::Channel;
 
 use crate::error::Result;
 use crate::proto::pulumirpc;
-
-/// A boxed future that is `Send` — used for object-safe async trait methods.
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ---------------------------------------------------------------------------
 // MonitorConnection
@@ -22,37 +21,40 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Abstraction over the ResourceMonitor gRPC service.
 ///
 /// All methods take `&self` because the underlying tonic client is cheaply
-/// cloneable (it wraps an `Arc`'d channel). Methods return boxed futures
-/// so the trait is object-safe (`dyn MonitorConnection`).
-pub trait MonitorConnection: Send + Sync + 'static {
+/// cloneable (it wraps an `Arc`'d channel). Methods return `impl Future`
+/// via RPITIT for zero-cost monomorphized dispatch.
+pub trait MonitorConnection: Clone + Send + Sync + 'static {
     fn register_resource(
         &self,
         req: pulumirpc::RegisterResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::RegisterResourceResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::RegisterResourceResponse>> + Send;
 
     fn register_resource_outputs(
         &self,
         req: pulumirpc::RegisterResourceOutputsRequest,
-    ) -> BoxFuture<'_, Result<()>>;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn read_resource(
         &self,
         req: pulumirpc::ReadResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::ReadResourceResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::ReadResourceResponse>> + Send;
 
     fn invoke(
         &self,
         req: pulumirpc::ResourceInvokeRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::InvokeResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::InvokeResponse>> + Send;
 
     fn call(
         &self,
         req: pulumirpc::ResourceCallRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::CallResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::CallResponse>> + Send;
 
-    fn register_stack_transform(&self, req: pulumirpc::Callback) -> BoxFuture<'_, Result<()>>;
+    fn register_stack_transform(
+        &self,
+        req: pulumirpc::Callback,
+    ) -> impl Future<Output = Result<()>> + Send;
 
-    fn supports_feature(&self, feature: &str) -> BoxFuture<'_, Result<bool>>;
+    fn supports_feature(&self, feature: &str) -> impl Future<Output = Result<bool>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,18 +62,18 @@ pub trait MonitorConnection: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 /// Abstraction over the Engine gRPC service.
-pub trait EngineConnection: Send + Sync + 'static {
-    fn log(&self, req: pulumirpc::LogRequest) -> BoxFuture<'_, Result<()>>;
+pub trait EngineConnection: Clone + Send + Sync + 'static {
+    fn log(&self, req: pulumirpc::LogRequest) -> impl Future<Output = Result<()>> + Send;
 
     fn set_root_resource(
         &self,
         req: pulumirpc::SetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::SetRootResourceResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::SetRootResourceResponse>> + Send;
 
     fn get_root_resource(
         &self,
         req: pulumirpc::GetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::GetRootResourceResponse>>;
+    ) -> impl Future<Output = Result<pulumirpc::GetRootResourceResponse>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,63 +93,58 @@ impl GrpcMonitor {
 }
 
 impl MonitorConnection for GrpcMonitor {
-    fn register_resource(
+    async fn register_resource(
         &self,
         req: pulumirpc::RegisterResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::RegisterResourceResponse>> {
+    ) -> Result<pulumirpc::RegisterResourceResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.register_resource(req).await?.into_inner()) })
+        Ok(client.register_resource(req).await?.into_inner())
     }
 
-    fn register_resource_outputs(
+    async fn register_resource_outputs(
         &self,
         req: pulumirpc::RegisterResourceOutputsRequest,
-    ) -> BoxFuture<'_, Result<()>> {
+    ) -> Result<()> {
         let mut client = self.client.clone();
-        Box::pin(async move {
-            client.register_resource_outputs(req).await?;
-            Ok(())
-        })
+        client.register_resource_outputs(req).await?;
+        Ok(())
     }
 
-    fn read_resource(
+    async fn read_resource(
         &self,
         req: pulumirpc::ReadResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::ReadResourceResponse>> {
+    ) -> Result<pulumirpc::ReadResourceResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.read_resource(req).await?.into_inner()) })
+        Ok(client.read_resource(req).await?.into_inner())
     }
 
-    fn invoke(
+    async fn invoke(
         &self,
         req: pulumirpc::ResourceInvokeRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::InvokeResponse>> {
+    ) -> Result<pulumirpc::InvokeResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.invoke(req).await?.into_inner()) })
+        Ok(client.invoke(req).await?.into_inner())
     }
 
-    fn call(
-        &self,
-        req: pulumirpc::ResourceCallRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::CallResponse>> {
+    async fn call(&self, req: pulumirpc::ResourceCallRequest) -> Result<pulumirpc::CallResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.call(req).await?.into_inner()) })
+        Ok(client.call(req).await?.into_inner())
     }
 
-    fn register_stack_transform(&self, req: pulumirpc::Callback) -> BoxFuture<'_, Result<()>> {
+    async fn register_stack_transform(&self, req: pulumirpc::Callback) -> Result<()> {
         let mut client = self.client.clone();
-        Box::pin(async move {
-            client.register_stack_transform(req).await?;
-            Ok(())
-        })
+        client.register_stack_transform(req).await?;
+        Ok(())
     }
 
-    fn supports_feature(&self, feature: &str) -> BoxFuture<'_, Result<bool>> {
+    async fn supports_feature(&self, feature: &str) -> Result<bool> {
         let mut client = self.client.clone();
-        let req = pulumirpc::SupportsFeatureRequest {
-            id: feature.to_string(),
-        };
-        Box::pin(async move { Ok(client.supports_feature(req).await?.into_inner().has_support) })
+        let resp = client
+            .supports_feature(pulumirpc::SupportsFeatureRequest {
+                id: feature.to_string(),
+            })
+            .await?;
+        Ok(resp.into_inner().has_support)
     }
 }
 
@@ -168,28 +165,26 @@ impl GrpcEngine {
 }
 
 impl EngineConnection for GrpcEngine {
-    fn log(&self, req: pulumirpc::LogRequest) -> BoxFuture<'_, Result<()>> {
+    async fn log(&self, req: pulumirpc::LogRequest) -> Result<()> {
         let mut client = self.client.clone();
-        Box::pin(async move {
-            client.log(req).await?;
-            Ok(())
-        })
+        client.log(req).await?;
+        Ok(())
     }
 
-    fn set_root_resource(
+    async fn set_root_resource(
         &self,
         req: pulumirpc::SetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::SetRootResourceResponse>> {
+    ) -> Result<pulumirpc::SetRootResourceResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.set_root_resource(req).await?.into_inner()) })
+        Ok(client.set_root_resource(req).await?.into_inner())
     }
 
-    fn get_root_resource(
+    async fn get_root_resource(
         &self,
         req: pulumirpc::GetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::GetRootResourceResponse>> {
+    ) -> Result<pulumirpc::GetRootResourceResponse> {
         let mut client = self.client.clone();
-        Box::pin(async move { Ok(client.get_root_resource(req).await?.into_inner()) })
+        Ok(client.get_root_resource(req).await?.into_inner())
     }
 }
 
@@ -213,6 +208,7 @@ impl EngineConnection for GrpcEngine {
 /// let settings = Settings { /* ... */ };
 /// let ctx = Context::for_testing(monitor, engine, settings);
 /// ```
+#[derive(Clone)]
 pub struct MockMonitor {
     project: String,
     stack: String,
@@ -235,96 +231,86 @@ impl MockMonitor {
 }
 
 impl MonitorConnection for MockMonitor {
-    fn register_resource(
+    async fn register_resource(
         &self,
         req: pulumirpc::RegisterResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::RegisterResourceResponse>> {
+    ) -> Result<pulumirpc::RegisterResourceResponse> {
         let urn = self.make_urn(&req.r#type, &req.name);
         let id = if req.custom {
             format!("mock-id-{}", req.name)
         } else {
             String::new()
         };
-        Box::pin(async move {
-            Ok(pulumirpc::RegisterResourceResponse {
-                urn,
-                id,
-                object: req.object,
-                stable: true,
-                stables: vec![],
-                property_dependencies: Default::default(),
-                result: 0,
-            })
+        Ok(pulumirpc::RegisterResourceResponse {
+            urn,
+            id,
+            object: req.object,
+            stable: true,
+            stables: vec![],
+            property_dependencies: Default::default(),
+            result: 0,
         })
     }
 
-    fn register_resource_outputs(
+    async fn register_resource_outputs(
         &self,
         _req: pulumirpc::RegisterResourceOutputsRequest,
-    ) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
+    ) -> Result<()> {
+        Ok(())
     }
 
-    fn read_resource(
+    async fn read_resource(
         &self,
         req: pulumirpc::ReadResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::ReadResourceResponse>> {
+    ) -> Result<pulumirpc::ReadResourceResponse> {
         let urn = self.make_urn(&req.r#type, &req.name);
-        Box::pin(async move {
-            Ok(pulumirpc::ReadResourceResponse {
-                urn,
-                properties: req.properties,
-            })
+        Ok(pulumirpc::ReadResourceResponse {
+            urn,
+            properties: req.properties,
         })
     }
 
-    fn invoke(
+    async fn invoke(
         &self,
         _req: pulumirpc::ResourceInvokeRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::InvokeResponse>> {
-        Box::pin(async {
-            Ok(pulumirpc::InvokeResponse {
-                r#return: Some(prost_types::Struct {
-                    fields: Default::default(),
-                }),
-                failures: vec![],
-            })
+    ) -> Result<pulumirpc::InvokeResponse> {
+        Ok(pulumirpc::InvokeResponse {
+            r#return: Some(prost_types::Struct {
+                fields: Default::default(),
+            }),
+            failures: vec![],
         })
     }
 
-    fn call(
-        &self,
-        _req: pulumirpc::ResourceCallRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::CallResponse>> {
-        Box::pin(async {
-            Ok(pulumirpc::CallResponse {
-                r#return: Some(prost_types::Struct {
-                    fields: Default::default(),
-                }),
-                failures: vec![],
-                return_dependencies: Default::default(),
-            })
+    async fn call(&self, _req: pulumirpc::ResourceCallRequest) -> Result<pulumirpc::CallResponse> {
+        Ok(pulumirpc::CallResponse {
+            r#return: Some(prost_types::Struct {
+                fields: Default::default(),
+            }),
+            failures: vec![],
+            return_dependencies: Default::default(),
         })
     }
 
-    fn register_stack_transform(&self, _req: pulumirpc::Callback) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn register_stack_transform(&self, _req: pulumirpc::Callback) -> Result<()> {
+        Ok(())
     }
 
-    fn supports_feature(&self, _feature: &str) -> BoxFuture<'_, Result<bool>> {
-        Box::pin(async { Ok(true) })
+    async fn supports_feature(&self, _feature: &str) -> Result<bool> {
+        Ok(true)
     }
 }
 
 /// A mock [`EngineConnection`] that accepts all operations as no-ops.
+#[derive(Clone)]
 pub struct MockEngine {
-    root_urn: tokio::sync::Mutex<String>,
+    root_urn: std::sync::Arc<tokio::sync::Mutex<String>>,
 }
 
 impl MockEngine {
     pub fn new() -> Self {
         Self {
-            root_urn: tokio::sync::Mutex::new(String::new()),
+            root_urn: std::sync::Arc::new(tokio::sync::Mutex::new(String::new())),
         }
     }
 }
@@ -336,27 +322,23 @@ impl Default for MockEngine {
 }
 
 impl EngineConnection for MockEngine {
-    fn log(&self, _req: pulumirpc::LogRequest) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn log(&self, _req: pulumirpc::LogRequest) -> Result<()> {
+        Ok(())
     }
 
-    fn set_root_resource(
+    async fn set_root_resource(
         &self,
         req: pulumirpc::SetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::SetRootResourceResponse>> {
-        Box::pin(async move {
-            *self.root_urn.lock().await = req.urn;
-            Ok(pulumirpc::SetRootResourceResponse {})
-        })
+    ) -> Result<pulumirpc::SetRootResourceResponse> {
+        *self.root_urn.lock().await = req.urn;
+        Ok(pulumirpc::SetRootResourceResponse {})
     }
 
-    fn get_root_resource(
+    async fn get_root_resource(
         &self,
         _req: pulumirpc::GetRootResourceRequest,
-    ) -> BoxFuture<'_, Result<pulumirpc::GetRootResourceResponse>> {
-        Box::pin(async {
-            let urn = self.root_urn.lock().await.clone();
-            Ok(pulumirpc::GetRootResourceResponse { urn })
-        })
+    ) -> Result<pulumirpc::GetRootResourceResponse> {
+        let urn = self.root_urn.lock().await.clone();
+        Ok(pulumirpc::GetRootResourceResponse { urn })
     }
 }

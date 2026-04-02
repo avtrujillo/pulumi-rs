@@ -1,5 +1,6 @@
 use std::future::{Future, IntoFuture};
 
+use crate::connection::{EngineConnection, GrpcEngine, GrpcMonitor, MonitorConnection};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::resource::{ResourceOptions, register_resource_inner};
@@ -58,20 +59,23 @@ impl StackReference {
 ///
 /// The `stack_name` should be the fully-qualified stack name, typically
 /// in the form `"org/project/stack"`.
-pub struct StackReferenceBuilder {
-    ctx: Context,
+pub struct StackReferenceBuilder<
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     name: String,
     stack_name: String,
     opts: ResourceOptions,
 }
 
-impl StackReferenceBuilder {
+impl<M: MonitorConnection, E: EngineConnection> StackReferenceBuilder<M, E> {
     /// Creates a new stack reference builder.
     ///
     /// `stack_name` is the fully-qualified name of the stack to reference
     /// (e.g. `"org/project/stack"`). This is used as both the resource name
     /// and the stack identifier.
-    pub fn new(ctx: &Context, stack_name: impl Into<String>) -> Self {
+    pub fn new(ctx: &Context<M, E>, stack_name: impl Into<String>) -> Self {
         let stack_name = stack_name.into();
         StackReferenceBuilder {
             ctx: ctx.clone(),
@@ -102,7 +106,7 @@ impl StackReferenceBuilder {
 
 const STACK_REFERENCE_TYPE: &str = "pulumi:pulumi:StackReference";
 
-impl IntoFuture for StackReferenceBuilder {
+impl<M: MonitorConnection, E: EngineConnection> IntoFuture for StackReferenceBuilder<M, E> {
     type Output = Result<StackReference>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 

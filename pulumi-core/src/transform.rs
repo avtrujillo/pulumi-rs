@@ -5,6 +5,7 @@ use std::sync::Arc;
 use prost::Message;
 use tokio::sync::{Mutex, oneshot};
 
+use crate::connection::{EngineConnection, MonitorConnection};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
@@ -192,7 +193,10 @@ async fn ensure_callback_server() -> Result<(SocketAddr, Arc<Mutex<CallbackState
 ///     }
 /// })).await?;
 /// ```
-pub async fn register_stack_transform(ctx: &Context, transform: TransformFn) -> Result<()> {
+pub async fn register_stack_transform<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    transform: TransformFn,
+) -> Result<()> {
     let (addr, state) = ensure_callback_server().await?;
 
     let token = {

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::connection::{EngineConnection, GrpcEngine, GrpcMonitor, MonitorConnection};
 use crate::error::{Error, Result};
@@ -183,18 +182,17 @@ fn parse_list(raw: &str) -> Vec<String> {
 
 /// The Pulumi program context.
 ///
-/// `Context` holds the connections to the Pulumi engine and resource monitor.
-/// It is the entry point for registering resources, invoking functions, and logging.
+/// `Context` holds the connections to the Pulumi engine and resource monitor,
+/// parameterized over the connection implementations for zero-cost abstraction.
 ///
-/// A `Context` is created by [`run`](crate::run), which sets up connections and
-/// passes the context to your program function.
-///
+/// The default type parameters use real gRPC connections ([`GrpcMonitor`] and
+/// [`GrpcEngine`]), so normal usage is simply `Context` with no type arguments.
 /// For testing, use [`Context::for_testing`] to create a context backed by mock
-/// connections instead of real gRPC clients.
+/// connections (e.g. `Context<MockMonitor, MockEngine>`).
 #[derive(Clone)]
-pub struct Context {
-    monitor: Arc<dyn MonitorConnection>,
-    engine: Arc<dyn EngineConnection>,
+pub struct Context<M: MonitorConnection = GrpcMonitor, E: EngineConnection = GrpcEngine> {
+    monitor: M,
+    engine: E,
     settings: Settings,
 }
 
@@ -210,8 +208,8 @@ impl Context {
         let engine_client =
             pulumirpc::engine_client::EngineClient::connect(engine_endpoint).await?;
 
-        let monitor = Arc::new(GrpcMonitor::new(monitor_client));
-        let engine = Arc::new(GrpcEngine::new(engine_client));
+        let monitor = GrpcMonitor::new(monitor_client);
+        let engine = GrpcEngine::new(engine_client);
 
         Ok(Context {
             settings,
@@ -219,7 +217,9 @@ impl Context {
             engine,
         })
     }
+}
 
+impl<M: MonitorConnection, E: EngineConnection> Context<M, E> {
     /// Creates a context for testing with custom monitor and engine implementations.
     ///
     /// This allows running Pulumi programs against mock backends without a real
@@ -238,14 +238,10 @@ impl Context {
     ///     settings,
     /// );
     /// ```
-    pub fn for_testing(
-        monitor: impl MonitorConnection,
-        engine: impl EngineConnection,
-        settings: Settings,
-    ) -> Self {
+    pub fn for_testing(monitor: M, engine: E, settings: Settings) -> Self {
         Context {
-            monitor: Arc::new(monitor),
-            engine: Arc::new(engine),
+            monitor,
+            engine,
             settings,
         }
     }
@@ -343,13 +339,13 @@ impl Context {
     }
 
     /// Returns a reference to the monitor connection for internal use.
-    pub(crate) fn monitor(&self) -> &dyn MonitorConnection {
-        &*self.monitor
+    pub(crate) fn monitor(&self) -> &M {
+        &self.monitor
     }
 
     /// Returns a reference to the engine connection for internal use.
-    pub(crate) fn engine(&self) -> &dyn EngineConnection {
-        &*self.engine
+    pub(crate) fn engine(&self) -> &E {
+        &self.engine
     }
 
     /// Returns whether a feature is supported by the resource monitor.
