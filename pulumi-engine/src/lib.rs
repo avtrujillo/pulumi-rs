@@ -35,6 +35,7 @@ pub mod engine_service;
 pub mod error;
 pub mod monitor_service;
 pub mod orchestrator;
+pub mod provider;
 pub mod state;
 
 pub(crate) use pulumi_core::proto::pulumirpc;
