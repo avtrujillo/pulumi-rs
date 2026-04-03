@@ -1,12 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
+use crate::connection::{EngineConnection, GrpcEngine, GrpcMonitor, MonitorConnection};
 use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
-use crate::proto::pulumirpc::engine_client::EngineClient;
-use crate::proto::pulumirpc::resource_monitor_client::ResourceMonitorClient;
 
 /// Runtime settings extracted from environment variables set by the Pulumi engine.
 #[derive(Debug, Clone)]
@@ -184,24 +180,19 @@ fn parse_list(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
-/// The inner state of a Pulumi [`Context`], shared behind an `Arc<Mutex<...>>`.
-struct ContextInner {
-    monitor: ResourceMonitorClient<tonic::transport::Channel>,
-    engine: EngineClient<tonic::transport::Channel>,
-    /// The URN of the root stack resource.
-    root_urn: Option<String>,
-}
-
 /// The Pulumi program context.
 ///
-/// `Context` holds the gRPC connections to the Pulumi engine and resource monitor.
-/// It is the entry point for registering resources, invoking functions, and logging.
+/// `Context` holds the connections to the Pulumi engine and resource monitor,
+/// parameterized over the connection implementations for zero-cost abstraction.
 ///
-/// A `Context` is created by [`run`](crate::run), which sets up connections and
-/// passes the context to your program function.
+/// The default type parameters use real gRPC connections ([`GrpcMonitor`] and
+/// [`GrpcEngine`]), so normal usage is simply `Context` with no type arguments.
+/// For testing, use [`Context::for_testing`] to create a context backed by mock
+/// connections (e.g. `Context<MockMonitor, MockEngine>`).
 #[derive(Clone)]
-pub struct Context {
-    inner: Arc<Mutex<ContextInner>>,
+pub struct Context<M: MonitorConnection = GrpcMonitor, E: EngineConnection = GrpcEngine> {
+    monitor: M,
+    engine: E,
     settings: Settings,
 }
 
@@ -211,29 +202,48 @@ impl Context {
         let monitor_endpoint = to_endpoint(&settings.monitor_addr)?;
         let engine_endpoint = to_endpoint(&settings.engine_addr)?;
 
-        let monitor = ResourceMonitorClient::connect(monitor_endpoint).await?;
-        let engine = EngineClient::connect(engine_endpoint).await?;
+        let monitor_client =
+            pulumirpc::resource_monitor_client::ResourceMonitorClient::connect(monitor_endpoint)
+                .await?;
+        let engine_client =
+            pulumirpc::engine_client::EngineClient::connect(engine_endpoint).await?;
 
-        // Query the root resource URN.
-        let mut engine_clone = engine.clone();
-        let root_resp = engine_clone
-            .get_root_resource(pulumirpc::GetRootResourceRequest {})
-            .await?;
-        let root_urn = {
-            let urn = root_resp.into_inner().urn;
-            if urn.is_empty() { None } else { Some(urn) }
-        };
+        let monitor = GrpcMonitor::new(monitor_client);
+        let engine = GrpcEngine::new(engine_client);
 
-        let ctx = Context {
-            settings: settings.clone(),
-            inner: Arc::new(Mutex::new(ContextInner {
-                monitor,
-                engine,
-                root_urn,
-            })),
-        };
+        Ok(Context {
+            settings,
+            monitor,
+            engine,
+        })
+    }
+}
 
-        Ok(ctx)
+impl<M: MonitorConnection, E: EngineConnection> Context<M, E> {
+    /// Creates a context for testing with custom monitor and engine implementations.
+    ///
+    /// This allows running Pulumi programs against mock backends without a real
+    /// engine or provider plugins.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pulumi_core::connection::{MockMonitor, MockEngine};
+    /// use pulumi_core::context::{Context, Settings};
+    ///
+    /// let settings = Settings { project: "test".into(), stack: "dev".into(), /* ... */ };
+    /// let ctx = Context::for_testing(
+    ///     MockMonitor::new("test", "dev"),
+    ///     MockEngine::new(),
+    ///     settings,
+    /// );
+    /// ```
+    pub fn for_testing(monitor: M, engine: E, settings: Settings) -> Self {
+        Context {
+            monitor,
+            engine,
+            settings,
+        }
     }
 
     /// Returns the current project name.
@@ -328,31 +338,20 @@ impl Context {
         self.settings.is_config_secret(key)
     }
 
-    /// Returns the URN of the root stack resource, if known.
-    pub async fn root_urn(&self) -> Option<String> {
-        self.inner.lock().await.root_urn.clone()
+    /// Returns a reference to the monitor connection for internal use.
+    pub(crate) fn monitor(&self) -> &M {
+        &self.monitor
     }
 
-    /// Returns a clone of the resource monitor client for internal use.
-    pub(crate) async fn monitor(&self) -> ResourceMonitorClient<tonic::transport::Channel> {
-        self.inner.lock().await.monitor.clone()
-    }
-
-    /// Returns a clone of the engine client for internal use.
-    pub(crate) async fn engine(&self) -> EngineClient<tonic::transport::Channel> {
-        self.inner.lock().await.engine.clone()
+    /// Returns a reference to the engine connection for internal use.
+    pub(crate) fn engine(&self) -> &E {
+        &self.engine
     }
 
     /// Returns whether a feature is supported by the resource monitor.
     #[allow(dead_code)]
     pub(crate) async fn supports_feature(&self, feature: &str) -> Result<bool> {
-        let mut monitor = self.monitor().await;
-        let resp = monitor
-            .supports_feature(pulumirpc::SupportsFeatureRequest {
-                id: feature.to_string(),
-            })
-            .await?;
-        Ok(resp.into_inner().has_support)
+        self.monitor.supports_feature(feature).await
     }
 }
 

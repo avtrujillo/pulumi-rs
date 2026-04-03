@@ -1,3 +1,4 @@
+use crate::connection::{EngineConnection, MonitorConnection};
 use crate::context::Context;
 use crate::error::Result;
 use crate::proto::pulumirpc;
@@ -23,8 +24,8 @@ impl From<Severity> for i32 {
 }
 
 /// Sends a log message to the Pulumi engine.
-async fn log_message(
-    ctx: &Context,
+async fn log_message<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     severity: Severity,
     message: &str,
     urn: Option<&str>,
@@ -38,33 +39,50 @@ async fn log_message(
         ephemeral,
     };
 
-    let mut engine = ctx.engine().await;
-    engine.log(req).await?;
-
-    Ok(())
+    ctx.engine().log(req).await
 }
 
 /// Logs a debug message.
-pub async fn debug(ctx: &Context, message: &str, urn: Option<&str>) -> Result<()> {
+pub async fn debug<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    message: &str,
+    urn: Option<&str>,
+) -> Result<()> {
     log_message(ctx, Severity::Debug, message, urn, false).await
 }
 
 /// Logs an informational message.
-pub async fn info(ctx: &Context, message: &str, urn: Option<&str>) -> Result<()> {
+pub async fn info<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    message: &str,
+    urn: Option<&str>,
+) -> Result<()> {
     log_message(ctx, Severity::Info, message, urn, false).await
 }
 
 /// Logs a warning message.
-pub async fn warn(ctx: &Context, message: &str, urn: Option<&str>) -> Result<()> {
+pub async fn warn<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    message: &str,
+    urn: Option<&str>,
+) -> Result<()> {
     log_message(ctx, Severity::Warning, message, urn, false).await
 }
 
 /// Logs an error message.
-pub async fn error(ctx: &Context, message: &str, urn: Option<&str>) -> Result<()> {
+pub async fn error<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    message: &str,
+    urn: Option<&str>,
+) -> Result<()> {
     log_message(ctx, Severity::Error, message, urn, false).await
 }
 
 /// Logs an ephemeral status message (shown during operations but not persisted).
-pub async fn status(ctx: &Context, message: &str, urn: Option<&str>) -> Result<()> {
+pub async fn status<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
+    message: &str,
+    urn: Option<&str>,
+) -> Result<()> {
     log_message(ctx, Severity::Info, message, urn, true).await
 }

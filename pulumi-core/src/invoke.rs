@@ -4,6 +4,7 @@ use std::future::{Future, IntoFuture};
 use ::serde::Serialize;
 use ::serde::de::DeserializeOwned;
 
+use crate::connection::{EngineConnection, GrpcEngine, GrpcMonitor, MonitorConnection};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
@@ -63,16 +64,20 @@ pub struct InvokeOptions {
 ///
 /// Implements [`IntoFuture`] using `impl_trait_in_assoc_type`, so it can be
 /// `.await`ed directly without boxing the future.
-pub struct InvokeBuilder<F: ProviderFunction> {
-    ctx: Context,
+pub struct InvokeBuilder<
+    F: ProviderFunction,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     args: F::Args,
     opts: InvokeOptions,
     _marker: std::marker::PhantomData<F>,
 }
 
-impl<F: ProviderFunction> InvokeBuilder<F> {
+impl<F: ProviderFunction, M: MonitorConnection, E: EngineConnection> InvokeBuilder<F, M, E> {
     /// Creates a new invoke builder for function `F`.
-    pub fn new(ctx: &Context, args: F::Args) -> Self {
+    pub fn new(ctx: &Context<M, E>, args: F::Args) -> Self {
         InvokeBuilder {
             ctx: ctx.clone(),
             args,
@@ -98,8 +103,10 @@ impl<F: ProviderFunction> InvokeBuilder<F> {
     }
 }
 
-/// `InvokeBuilder<F>` can be `.await`ed directly.
-impl<F: ProviderFunction> IntoFuture for InvokeBuilder<F> {
+/// `InvokeBuilder<F, M, E>` can be `.await`ed directly.
+impl<F: ProviderFunction, M: MonitorConnection, E: EngineConnection> IntoFuture
+    for InvokeBuilder<F, M, E>
+{
     type Output = Result<F::Returns>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
@@ -147,9 +154,9 @@ pub trait ComponentMethod: Sized + Send + 'static {
 
 /// The result of calling a component method, including return dependencies.
 #[derive(Debug)]
-pub struct CallResult<M: ComponentMethod> {
+pub struct CallResult<CM: ComponentMethod> {
     /// The typed return value.
-    pub result: M::Returns,
+    pub result: CM::Returns,
     /// Per-property dependency URNs on the return value.
     pub return_deps: HashMap<String, Vec<String>>,
 }
@@ -157,24 +164,28 @@ pub struct CallResult<M: ComponentMethod> {
 /// A builder for calling a component method with dependency tracking.
 ///
 /// Implements [`IntoFuture`] using `impl_trait_in_assoc_type`.
-pub struct CallBuilder<M: ComponentMethod> {
-    ctx: Context,
-    args: M::Args,
+pub struct CallBuilder<
+    CM: ComponentMethod,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
+    args: CM::Args,
     arg_deps: HashMap<String, Vec<String>>,
     opts: InvokeOptions,
-    _marker: std::marker::PhantomData<M>,
+    _marker: std::marker::PhantomData<CM>,
 }
 
-impl<M: ComponentMethod> CallBuilder<M> {
-    /// Creates a new call builder for method `M`.
-    pub fn new(ctx: &Context, args: M::Args) -> Self {
+impl<CM: ComponentMethod, M: MonitorConnection, E: EngineConnection> CallBuilder<CM, M, E> {
+    /// Creates a new call builder for method `CM`.
+    pub fn new(ctx: &Context<M, E>, args: CM::Args) -> Self {
         CallBuilder {
             ctx: ctx.clone(),
             args,
             arg_deps: HashMap::new(),
             opts: InvokeOptions {
-                version: M::VERSION.to_string(),
-                plugin_download_url: M::PLUGIN_DOWNLOAD_URL.to_string(),
+                version: CM::VERSION.to_string(),
+                plugin_download_url: CM::PLUGIN_DOWNLOAD_URL.to_string(),
                 ..Default::default()
             },
             _marker: std::marker::PhantomData,
@@ -200,16 +211,18 @@ impl<M: ComponentMethod> CallBuilder<M> {
     }
 }
 
-/// `CallBuilder<M>` can be `.await`ed directly.
-impl<M: ComponentMethod> IntoFuture for CallBuilder<M> {
-    type Output = Result<CallResult<M>>;
+/// `CallBuilder<CM, M, E>` can be `.await`ed directly.
+impl<CM: ComponentMethod, M: MonitorConnection, E: EngineConnection> IntoFuture
+    for CallBuilder<CM, M, E>
+{
+    type Output = Result<CallResult<CM>>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
     fn into_future(self) -> Self::IntoFuture {
         async move {
             let (json_result, return_deps) =
-                call_inner(&self.ctx, M::TOKEN, self.args, self.arg_deps, &self.opts).await?;
-            let result: M::Returns = serde_json::from_value(json_result)?;
+                call_inner(&self.ctx, CM::TOKEN, self.args, self.arg_deps, &self.opts).await?;
+            let result: CM::Returns = serde_json::from_value(json_result)?;
             Ok(CallResult {
                 result,
                 return_deps,
@@ -222,8 +235,8 @@ impl<M: ComponentMethod> IntoFuture for CallBuilder<M> {
 // Internal gRPC functions (used by builders)
 // ---------------------------------------------------------------------------
 
-async fn invoke_inner(
-    ctx: &Context,
+async fn invoke_inner<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     token: &str,
     args: serde_json::Value,
     opts: &InvokeOptions,
@@ -244,13 +257,11 @@ async fn invoke_inner(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.invoke(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().invoke(req).await?;
 
     // Check for failures.
-    if !inner.failures.is_empty() {
-        let failures: Vec<(String, String)> = inner
+    if !resp.failures.is_empty() {
+        let failures: Vec<(String, String)> = resp
             .failures
             .iter()
             .map(|f| (f.property.clone(), f.reason.clone()))
@@ -261,7 +272,7 @@ async fn invoke_inner(
         });
     }
 
-    let result = inner
+    let result = resp
         .r#return
         .as_ref()
         .map(struct_to_json)
@@ -270,8 +281,8 @@ async fn invoke_inner(
     Ok(result)
 }
 
-async fn call_inner<A: Serialize + Send>(
-    ctx: &Context,
+async fn call_inner<A: Serialize + Send, M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     token: &str,
     args: A,
     arg_deps: HashMap<String, Vec<String>>,
@@ -304,12 +315,10 @@ async fn call_inner<A: Serialize + Send>(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.call(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().call(req).await?;
 
-    if !inner.failures.is_empty() {
-        let failures: Vec<(String, String)> = inner
+    if !resp.failures.is_empty() {
+        let failures: Vec<(String, String)> = resp
             .failures
             .iter()
             .map(|f| (f.property.clone(), f.reason.clone()))
@@ -320,13 +329,13 @@ async fn call_inner<A: Serialize + Send>(
         });
     }
 
-    let result = inner
+    let result = resp
         .r#return
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
-    let return_deps = inner
+    let return_deps = resp
         .return_dependencies
         .into_iter()
         .map(|(k, v)| (k, v.urns))

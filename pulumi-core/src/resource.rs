@@ -4,6 +4,7 @@ use std::future::{Future, IntoFuture};
 use ::serde::Serialize;
 use ::serde::de::DeserializeOwned;
 
+use crate::connection::{EngineConnection, GrpcEngine, GrpcMonitor, MonitorConnection};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::proto::pulumirpc;
@@ -176,6 +177,9 @@ pub struct RegisteredResource<R: Resource> {
 /// `.await`ed directly without boxing the future. The builder captures all
 /// registration parameters and performs the gRPC call when awaited.
 ///
+/// The `M` and `E` type parameters default to the real gRPC implementations,
+/// so normal usage is simply `ResourceBuilder::<MyResource>::new(...)`.
+///
 /// # Example
 ///
 /// ```ignore
@@ -184,17 +188,21 @@ pub struct RegisteredResource<R: Resource> {
 ///     .protect()
 ///     .await?;
 /// ```
-pub struct ResourceBuilder<R: Resource> {
-    ctx: Context,
+pub struct ResourceBuilder<
+    R: Resource,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     name: String,
     inputs: R::Inputs,
     opts: ResourceOptions,
     _marker: std::marker::PhantomData<R>,
 }
 
-impl<R: Resource> ResourceBuilder<R> {
+impl<R: Resource, M: MonitorConnection, E: EngineConnection> ResourceBuilder<R, M, E> {
     /// Creates a new builder for a resource of type `R`.
-    pub fn new(ctx: &Context, name: impl Into<String>, inputs: R::Inputs) -> Self {
+    pub fn new(ctx: &Context<M, E>, name: impl Into<String>, inputs: R::Inputs) -> Self {
         ResourceBuilder {
             ctx: ctx.clone(),
             name: name.into(),
@@ -299,9 +307,11 @@ impl<R: Resource> ResourceBuilder<R> {
     }
 }
 
-/// `ResourceBuilder<R>` can be `.await`ed directly. The future type is an
+/// `ResourceBuilder<R, M, E>` can be `.await`ed directly. The future type is an
 /// opaque `impl Future` — no heap allocation for the future itself.
-impl<R: Resource> IntoFuture for ResourceBuilder<R> {
+impl<R: Resource, M: MonitorConnection, E: EngineConnection> IntoFuture
+    for ResourceBuilder<R, M, E>
+{
     type Output = Result<RegisteredResource<R>>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
@@ -339,8 +349,12 @@ impl<R: Resource> IntoFuture for ResourceBuilder<R> {
 /// let existing = ReadBuilder::<S3Bucket>::new(&ctx, "imported-bucket", "bucket-id-123")
 ///     .await?;
 /// ```
-pub struct ReadBuilder<R: Resource> {
-    ctx: Context,
+pub struct ReadBuilder<
+    R: Resource,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     name: String,
     id: String,
     props: serde_json::Value,
@@ -348,11 +362,11 @@ pub struct ReadBuilder<R: Resource> {
     _marker: std::marker::PhantomData<R>,
 }
 
-impl<R: Resource> ReadBuilder<R> {
+impl<R: Resource, M: MonitorConnection, E: EngineConnection> ReadBuilder<R, M, E> {
     /// Creates a new read builder for a resource of type `R`.
     ///
     /// `id` is the existing cloud provider ID of the resource to import.
-    pub fn new(ctx: &Context, name: impl Into<String>, id: impl Into<String>) -> Self {
+    pub fn new(ctx: &Context<M, E>, name: impl Into<String>, id: impl Into<String>) -> Self {
         ReadBuilder {
             ctx: ctx.clone(),
             name: name.into(),
@@ -392,8 +406,8 @@ impl<R: Resource> ReadBuilder<R> {
     }
 }
 
-/// `ReadBuilder<R>` can be `.await`ed directly.
-impl<R: Resource> IntoFuture for ReadBuilder<R> {
+/// `ReadBuilder<R, M, E>` can be `.await`ed directly.
+impl<R: Resource, M: MonitorConnection, E: EngineConnection> IntoFuture for ReadBuilder<R, M, E> {
     type Output = Result<RegisteredResource<R>>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
@@ -446,22 +460,30 @@ impl<C: ComponentResource> RegisteredComponent<C> {
     }
 
     /// Registers the final outputs for this component resource.
-    pub async fn register_outputs(&self, ctx: &Context, outputs: serde_json::Value) -> Result<()> {
+    pub async fn register_outputs<M: MonitorConnection, E: EngineConnection>(
+        &self,
+        ctx: &Context<M, E>,
+        outputs: serde_json::Value,
+    ) -> Result<()> {
         register_resource_outputs(ctx, &self.urn, outputs).await
     }
 }
 
 /// A builder for registering a component resource.
-pub struct ComponentBuilder<C: ComponentResource> {
-    ctx: Context,
+pub struct ComponentBuilder<
+    C: ComponentResource,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     name: String,
     opts: ResourceOptions,
     _marker: std::marker::PhantomData<C>,
 }
 
-impl<C: ComponentResource> ComponentBuilder<C> {
+impl<C: ComponentResource, M: MonitorConnection, E: EngineConnection> ComponentBuilder<C, M, E> {
     /// Creates a new component builder.
-    pub fn new(ctx: &Context, name: impl Into<String>) -> Self {
+    pub fn new(ctx: &Context<M, E>, name: impl Into<String>) -> Self {
         ComponentBuilder {
             ctx: ctx.clone(),
             name: name.into(),
@@ -489,8 +511,10 @@ impl<C: ComponentResource> ComponentBuilder<C> {
     }
 }
 
-/// `ComponentBuilder<C>` can be `.await`ed directly.
-impl<C: ComponentResource> IntoFuture for ComponentBuilder<C> {
+/// `ComponentBuilder<C, M, E>` can be `.await`ed directly.
+impl<C: ComponentResource, M: MonitorConnection, E: EngineConnection> IntoFuture
+    for ComponentBuilder<C, M, E>
+{
     type Output = Result<RegisteredComponent<C>>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
@@ -548,17 +572,23 @@ pub struct RegisteredRemoteComponent<R: RemoteComponent> {
 }
 
 /// A builder for registering a remote component resource.
-pub struct RemoteComponentBuilder<R: RemoteComponent> {
-    ctx: Context,
+pub struct RemoteComponentBuilder<
+    R: RemoteComponent,
+    M: MonitorConnection = GrpcMonitor,
+    E: EngineConnection = GrpcEngine,
+> {
+    ctx: Context<M, E>,
     name: String,
     inputs: R::Inputs,
     opts: ResourceOptions,
     _marker: std::marker::PhantomData<R>,
 }
 
-impl<R: RemoteComponent> RemoteComponentBuilder<R> {
+impl<R: RemoteComponent, M: MonitorConnection, E: EngineConnection>
+    RemoteComponentBuilder<R, M, E>
+{
     /// Creates a new remote component builder.
-    pub fn new(ctx: &Context, name: impl Into<String>, inputs: R::Inputs) -> Self {
+    pub fn new(ctx: &Context<M, E>, name: impl Into<String>, inputs: R::Inputs) -> Self {
         RemoteComponentBuilder {
             ctx: ctx.clone(),
             name: name.into(),
@@ -597,8 +627,10 @@ impl<R: RemoteComponent> RemoteComponentBuilder<R> {
     }
 }
 
-/// `RemoteComponentBuilder<R>` can be `.await`ed directly.
-impl<R: RemoteComponent> IntoFuture for RemoteComponentBuilder<R> {
+/// `RemoteComponentBuilder<R, M, E>` can be `.await`ed directly.
+impl<R: RemoteComponent, M: MonitorConnection, E: EngineConnection> IntoFuture
+    for RemoteComponentBuilder<R, M, E>
+{
     type Output = Result<RegisteredRemoteComponent<R>>;
     type IntoFuture = impl Future<Output = Self::Output> + Send;
 
@@ -649,8 +681,8 @@ pub(crate) fn alias_to_proto(alias: &Alias) -> pulumirpc::Alias {
     }
 }
 
-pub(crate) async fn register_resource_inner(
-    ctx: &Context,
+pub(crate) async fn register_resource_inner<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     resource_type: &str,
     name: &str,
     inputs: serde_json::Value,
@@ -711,39 +743,37 @@ pub(crate) async fn register_resource_inner(
         env_var_mappings: HashMap::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.register_resource(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().register_resource(req).await?;
 
     // Check if the registration was reported as failed.
-    if inner.result == pulumirpc::Result::Fail as i32 {
+    if resp.result == pulumirpc::Result::Fail as i32 {
         return Err(Error::ResourceFailed {
-            urn: inner.urn.clone(),
+            urn: resp.urn.clone(),
         });
     }
 
-    let outputs = inner
+    let outputs = resp
         .object
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
-    let property_deps = inner
+    let property_deps = resp
         .property_dependencies
         .iter()
         .map(|(k, v)| (k.clone(), v.urns.clone()))
         .collect();
 
     Ok(ResourceResult {
-        urn: inner.urn,
-        id: inner.id,
+        urn: resp.urn,
+        id: resp.id,
         outputs,
         property_deps,
     })
 }
 
-pub(crate) async fn register_resource_outputs(
-    ctx: &Context,
+pub(crate) async fn register_resource_outputs<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     urn: &str,
     outputs: serde_json::Value,
 ) -> Result<()> {
@@ -754,14 +784,13 @@ pub(crate) async fn register_resource_outputs(
         outputs: Some(outputs_struct),
     };
 
-    let mut monitor = ctx.monitor().await;
-    monitor.register_resource_outputs(req).await?;
+    ctx.monitor().register_resource_outputs(req).await?;
 
     Ok(())
 }
 
-async fn read_resource_inner(
-    ctx: &Context,
+async fn read_resource_inner<M: MonitorConnection, E: EngineConnection>(
+    ctx: &Context<M, E>,
     resource_type: &str,
     name: &str,
     id: &str,
@@ -792,18 +821,16 @@ async fn read_resource_inner(
         parent_stack_trace_handle: String::new(),
     };
 
-    let mut monitor = ctx.monitor().await;
-    let resp = monitor.read_resource(req).await?;
-    let inner = resp.into_inner();
+    let resp = ctx.monitor().read_resource(req).await?;
 
-    let outputs = inner
+    let outputs = resp
         .properties
         .as_ref()
         .map(struct_to_json)
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
     Ok(ResourceResult {
-        urn: inner.urn,
+        urn: resp.urn,
         id: id.to_string(),
         outputs,
         property_deps: HashMap::new(),
