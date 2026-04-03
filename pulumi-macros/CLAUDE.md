@@ -15,7 +15,7 @@ No tests currently exist in this crate.
 
 - **proc-macro2** — token manipulation
 - **quote** — code generation
-- **syn** (with `full` feature) — Rust syntax parsing
+- **syn** v2 (with `full` feature) — Rust syntax parsing
 
 ## Derive Macros
 
@@ -54,4 +54,4 @@ Implements `pulumi_core::invoke::ProviderFunction` for read-only provider functi
 
 ## Source Structure
 
-Single file: `src/lib.rs` (~316 lines). Contains all three derive macro entry points and the shared `PulumiAttrs` parser (`parse_pulumi_attrs()`), which extracts `#[pulumi(...)]` attributes using `syn::parse_nested_meta`.
+Single file: `src/lib.rs` (~324 lines). Contains all three derive macro entry points and the shared `PulumiAttrs` parser (`parse_pulumi_attrs()`), which extracts `#[pulumi(...)]` attributes using `syn::parse_nested_meta`.

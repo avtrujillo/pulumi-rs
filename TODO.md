@@ -3,24 +3,23 @@
 ## Mock / Test Framework
 
 **Purpose:** Let users unit-test their Pulumi programs without deploying anything.
-Right now, the only way to verify a program is to run `pulumi up` against a real
-engine. A mock framework would let you assert that the right resources are
-registered with the right inputs, that outputs flow correctly through `Output<T>`
-combinators, and that error paths behave as expected — all in-process, in
-milliseconds.
 
-**How it would work:**
+**Status: PARTIALLY DONE.**
 
-1. **Trait abstraction over gRPC clients.** Today `Context` holds concrete
-   `ResourceMonitorClient<Channel>` and `EngineClient<Channel>` behind
-   `Arc<Mutex<>>`. Extract a trait (e.g. `ResourceMonitor`) with methods like
-   `register_resource()`, `invoke()`, `read_resource()`, and provide two
-   implementations: the real gRPC one and a `MockResourceMonitor` that records
-   calls and returns canned responses.
+Steps 1 and 2 are complete. `connection.rs` provides `MonitorConnection` and
+`EngineConnection` traits with `GrpcMonitor`/`GrpcEngine` (real) and
+`MockMonitor`/`MockEngine` (test) implementations. `Context` is now generic
+over these traits, so mock clients can be injected without gRPC or env vars.
 
-2. **`MockEngine`** that implements the engine-side trait: `get_root_resource()`,
-   `log()`, etc. It would store logged messages for assertion and return a
-   synthetic root URN.
+**Remaining work:**
+
+1. ~~**Trait abstraction over gRPC clients.**~~ **DONE** — `MonitorConnection`
+   and `EngineConnection` traits in `pulumi-core/src/connection.rs`. Uses RPITIT
+   for zero-cost async dispatch. `MockMonitor` and `MockEngine` record calls and
+   return canned responses.
+
+2. ~~**`MockEngine`**~~ **DONE** — `MockEngine` in `connection.rs` returns a
+   synthetic root URN and stores logged messages.
 
 3. **`TestContext`** constructor that wires up mock clients without needing
    `PULUMI_*` env vars or network connections:
@@ -41,11 +40,10 @@ milliseconds.
    framework should support returning unknowns so users can test that their
    `Output::map` / `Output::flat_map` chains handle unknown values correctly.
 
-**What changes:**
-- `pulumi-core/src/context.rs` — extract traits over the gRPC clients
+**What remains to change:**
 - New `pulumi-test` crate (or `pulumi-core/src/test_support.rs` behind a
-  `test-support` feature) with `MockResourceMonitor`, `MockEngine`,
-  `TestContext`, and assertion utilities
+  `test-support` feature) with `TestContext` and assertion utilities
+- Flesh out `MockMonitor` with configurable per-resource responses
 
 ## Integration Tests
 
@@ -172,40 +170,37 @@ third-party integrations) depend on stable interfaces.
 Many teams have policies against nightly in production. Removing the nightly
 dependency makes the SDK viable for production use.
 
-**Current nightly dependency:**
+**Current nightly dependencies:**
 
-The only nightly feature used is **`impl_trait_in_assoc_type`**, declared in
-`pulumi-core/src/lib.rs`. This enables the `IntoFuture` impls on builders to
-return `impl Future` in the associated type position instead of boxing:
+The SDK requires nightly for two reasons:
 
-```rust
-impl<R: Resource> IntoFuture for ResourceBuilder<R> {
-    type Output = Result<RegisteredResource<R>>;
-    type IntoFuture = impl Future<Output = Self::Output> + Send;  // nightly-only
-    fn into_future(self) -> Self::IntoFuture { async move { ... } }
-}
-```
+1. **`impl_trait_in_assoc_type`** — declared in `pulumi-core/src/lib.rs`. Used
+   by `IntoFuture` impls on builders to return `impl Future` in the associated
+   type position instead of boxing.
+
+2. **Rust edition 2024** — all crates use `edition = "2024"`, which requires
+   nightly. The toolchain is pinned to `nightly-2026-03-03` in
+   `rust-toolchain.toml`.
+
+Note: Connection traits (`MonitorConnection`, `EngineConnection`) and the
+`Provider` trait in `pulumi-engine` use RPITIT (return-position `impl Trait` in
+traits), which is stable since Rust 1.75. These do NOT require nightly.
 
 **Path to stable Rust:**
 
-1. **Option A: Box the future.** Replace `impl Future` with
-   `Pin<Box<dyn Future<Output = Self::Output> + Send>>`. This is the simplest
-   change — one heap allocation per `.await`ed builder, negligible cost for
-   infrastructure operations that do network I/O anyway. Used by virtually every
-   async Rust library on stable.
+1. **Option A: Box the future.** Replace `impl Future` in `IntoFuture` impls
+   with `Pin<Box<dyn Future<Output = Self::Output> + Send>>`. This is the
+   simplest change — one heap allocation per `.await`ed builder, negligible cost
+   for infrastructure operations that do network I/O anyway.
 
 2. **Option B: Named future types.** Use a concrete struct that implements
-   `Future` manually. More boilerplate, avoids boxing, but hard to maintain as
-   the async bodies evolve.
+   `Future` manually. More boilerplate, avoids boxing, but hard to maintain.
 
-3. **Option C: Wait for stabilization.** `impl_trait_in_assoc_type` has been in
-   nightly for years and is tracked in rust-lang/rust#63063. Stabilization is
-   not imminent.
+3. **Option C: Wait for stabilization.** `impl_trait_in_assoc_type` is tracked
+   in rust-lang/rust#63063. Edition 2024 stabilization timeline is separate.
 
-**Recommendation:** Option A (boxed futures). The performance difference is
-immaterial for Pulumi programs — each `.await` does a gRPC round-trip that
-dwarfs a heap allocation. This unblocks stable Rust with a one-line change per
-builder. The affected builders are:
+**Recommendation:** Option A (boxed futures) plus downgrading to edition 2021.
+The affected builders are:
 
 - `ResourceBuilder<R>` (`resource.rs`)
 - `ReadBuilder<R>` (`resource.rs`)
