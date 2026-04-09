@@ -1,12 +1,20 @@
 # TODO — pulumi-engine
 
-## Secret Encryption
+## ~~Secret Encryption~~ (Done)
 
-Secrets are stored unencrypted in the checkpoint JSON. Implement:
-- Encryption/decryption layer for secret values on checkpoint save/load
-- Key management (passphrase-based, cloud KMS, or compatible with Pulumi's
-  existing secrets providers)
-- Secret metadata tracking through the resource graph
+Implemented in `secrets.rs`. Passphrase-based encryption using AES-256-GCM
+with PBKDF2-HMAC-SHA256 key derivation (1M iterations). Ciphertext format
+(`v1:` + base64) is compatible with the Go Pulumi SDK. Activated via
+`PULUMI_CONFIG_PASSPHRASE` env var or `EngineOptions::secrets_manager`.
+
+Includes:
+- `SecretsManager` trait (RPITIT) and `PassphraseSecretsManager` impl
+- Recursive JSON tree walkers for encrypt/decrypt of secret-wrapped values
+- Salt-based key restoration across runs
+- Secret property tracking in `ResourceState`
+- Custom `Debug` impls that redact secret values
+- `debug_assert` guard against saving plaintext secrets when encryption is configured
+- 22 tests (15 in `secrets.rs`, 7 in `state.rs`)
 
 ## Transforms
 

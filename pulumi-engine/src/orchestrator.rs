@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 use tonic::transport::Server;
@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
 use crate::provider::{self, GrpcProvider, Provider, ProviderManager, json_to_proto_struct};
 use crate::pulumirpc;
+use crate::secrets::PassphraseSecretsManager;
 use crate::state::{Checkpoint, EngineState};
 
 /// Configuration for a Pulumi engine run.
@@ -32,6 +33,9 @@ pub struct EngineOptions {
     /// Path to the checkpoint file for state persistence.
     /// Defaults to `<work_dir>/.pulumi-rs/<stack>.json`.
     pub checkpoint_path: Option<PathBuf>,
+    /// Secrets manager for encrypting/decrypting secret values in checkpoints.
+    /// When `None`, secrets are stored in plaintext.
+    pub secrets_manager: Option<PassphraseSecretsManager>,
 }
 
 impl Default for EngineOptions {
@@ -44,6 +48,7 @@ impl Default for EngineOptions {
             dry_run: false,
             env: HashMap::new(),
             checkpoint_path: None,
+            secrets_manager: None,
         }
     }
 }
@@ -112,6 +117,32 @@ impl<P: Provider> PulumiEngine<P> {
         Self { options, providers }
     }
 
+    /// Load a checkpoint, decrypting secrets if a secrets manager is configured.
+    async fn load_checkpoint(&self, path: &Path) -> Result<Option<Checkpoint>> {
+        if let Some(sm) = &self.options.secrets_manager {
+            Checkpoint::load_encrypted(path, sm)
+                .await
+                .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))
+        } else {
+            Checkpoint::load(path)
+                .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))
+        }
+    }
+
+    /// Save a checkpoint, encrypting secrets if a secrets manager is configured.
+    async fn save_checkpoint(&self, checkpoint: &Checkpoint, path: &Path) -> Result<()> {
+        if let Some(sm) = &self.options.secrets_manager {
+            checkpoint
+                .save_encrypted(path, sm)
+                .await
+                .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))
+        } else {
+            checkpoint
+                .save(path)
+                .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))
+        }
+    }
+
     /// Run the Pulumi program (equivalent to `pulumi up`).
     pub async fn up(&self) -> Result<UpResult> {
         self.run_program(false).await
@@ -128,8 +159,7 @@ impl<P: Provider> PulumiEngine<P> {
     /// dependency order, then clears the checkpoint.
     pub async fn destroy(&self) -> Result<DestroyResult> {
         let checkpoint_path = self.options.checkpoint_path();
-        let checkpoint = Checkpoint::load(&checkpoint_path)
-            .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))?;
+        let checkpoint = self.load_checkpoint(&checkpoint_path).await?;
 
         let mut summary = String::new();
 
@@ -207,9 +237,7 @@ impl<P: Provider> PulumiEngine<P> {
 
                     // Save empty checkpoint.
                     let empty = state.empty_checkpoint().await;
-                    empty
-                        .save(&checkpoint_path)
-                        .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
+                    self.save_checkpoint(&empty, &checkpoint_path).await?;
 
                     summary.push_str(&format!("\nDestroyed {} resource(s).\n", ordered.len()));
                 }
@@ -228,8 +256,7 @@ impl<P: Provider> PulumiEngine<P> {
     /// the actual cloud provider, then saves the updated checkpoint.
     pub async fn refresh(&self) -> Result<RefreshResult> {
         let checkpoint_path = self.options.checkpoint_path();
-        let checkpoint = Checkpoint::load(&checkpoint_path)
-            .map_err(|e| Error::Custom(format!("failed to load checkpoint: {e}")))?;
+        let checkpoint = self.load_checkpoint(&checkpoint_path).await?;
 
         let mut summary = String::new();
 
@@ -308,8 +335,7 @@ impl<P: Provider> PulumiEngine<P> {
 
                 let resource_count = updated_resources.len();
                 cp.resources = updated_resources;
-                cp.save(&checkpoint_path)
-                    .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
+                self.save_checkpoint(&cp, &checkpoint_path).await?;
 
                 summary.push_str(&format!("Refreshed {resource_count} resource(s).\n"));
             }
@@ -325,12 +351,9 @@ impl<P: Provider> PulumiEngine<P> {
         let checkpoint_path = self.options.checkpoint_path();
 
         // Load prior state from checkpoint.
-        let state = match Checkpoint::load(&checkpoint_path) {
-            Ok(Some(cp)) => EngineState::from_checkpoint(&cp),
-            Ok(None) => EngineState::new(self.options.project.clone(), self.options.stack.clone()),
-            Err(e) => {
-                return Err(Error::Custom(format!("failed to load checkpoint: {e}")));
-            }
+        let state = match self.load_checkpoint(&checkpoint_path).await? {
+            Some(cp) => EngineState::from_checkpoint(&cp),
+            None => EngineState::new(self.options.project.clone(), self.options.stack.clone()),
         };
 
         // Bind the gRPC servers to ephemeral ports.
@@ -479,9 +502,7 @@ impl<P: Provider> PulumiEngine<P> {
         // Save checkpoint (unless dry run).
         if !dry_run && !self.options.dry_run {
             let checkpoint = state.to_checkpoint().await;
-            checkpoint
-                .save(&checkpoint_path)
-                .map_err(|e| Error::Custom(format!("failed to save checkpoint: {e}")))?;
+            self.save_checkpoint(&checkpoint, &checkpoint_path).await?;
         }
 
         Ok(UpResult {

@@ -6,7 +6,7 @@
 |---|------|-------|--------|
 | 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium |
 | 2 | TestContext builder | `pulumi-core` | Medium |
-| 3 | Secret encryption | `pulumi-engine` | Large |
+| 3 | ~~Secret encryption~~ | `pulumi-engine` | ~~Large~~ **Done** |
 | 4 | Transforms | `pulumi-engine` | Medium |
 | 5 | Refresh improvements | `pulumi-engine` | Medium |
 | 6 | NativeStack parity | `pulumi-automation` | Medium |
