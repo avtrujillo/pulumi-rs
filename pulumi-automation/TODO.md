@@ -23,5 +23,5 @@ No tests exist in this crate. Add:
 
 ## Edition
 
-Currently uses edition 2024 (nightly). Downgrade to 2021 when the workspace
-moves to stable Rust.
+Uses edition 2024 (nightly). Stable Rust is a non-goal until the next-gen
+trait solver ships. See the root TODO.md.

@@ -164,48 +164,16 @@ third-party integrations) depend on stable interfaces.
 5. **Feature flags documentation.** Document `macros` feature and any future
    features (`test-support`, etc.) in crate-level docs and README.
 
-## Stable Rust Support
+## Stable Rust Support — Non-Goal
 
-**Purpose:** The nightly-only requirement is the single biggest adoption barrier.
-Many teams have policies against nightly in production. Removing the nightly
-dependency makes the SDK viable for production use.
+**Stable Rust is a non-goal until the next-generation trait solver ships.**
 
-**Current nightly dependencies:**
+The SDK relies on `impl_trait_in_assoc_type` (rust-lang/rust#63063) and Rust
+edition 2024, both of which require nightly. Rather than degrading the API with
+boxed futures or manual future types as a workaround, we are waiting for the
+next-gen trait solver to land on stable — at which point
+`impl_trait_in_assoc_type` (and potentially edition 2024) will stabilize
+naturally.
 
-The SDK requires nightly for two reasons:
-
-1. **`impl_trait_in_assoc_type`** — declared in `pulumi-core/src/lib.rs`. Used
-   by `IntoFuture` impls on builders to return `impl Future` in the associated
-   type position instead of boxing.
-
-2. **Rust edition 2024** — all crates use `edition = "2024"`, which requires
-   nightly. The toolchain is pinned to `nightly-2026-03-03` in
-   `rust-toolchain.toml`.
-
-Note: Connection traits (`MonitorConnection`, `EngineConnection`) and the
-`Provider` trait in `pulumi-engine` use RPITIT (return-position `impl Trait` in
-traits), which is stable since Rust 1.75. These do NOT require nightly.
-
-**Path to stable Rust:**
-
-1. **Option A: Box the future.** Replace `impl Future` in `IntoFuture` impls
-   with `Pin<Box<dyn Future<Output = Self::Output> + Send>>`. This is the
-   simplest change — one heap allocation per `.await`ed builder, negligible cost
-   for infrastructure operations that do network I/O anyway.
-
-2. **Option B: Named future types.** Use a concrete struct that implements
-   `Future` manually. More boilerplate, avoids boxing, but hard to maintain.
-
-3. **Option C: Wait for stabilization.** `impl_trait_in_assoc_type` is tracked
-   in rust-lang/rust#63063. Edition 2024 stabilization timeline is separate.
-
-**Recommendation:** Option A (boxed futures) plus downgrading to edition 2021.
-The affected builders are:
-
-- `ResourceBuilder<R>` (`resource.rs`)
-- `ReadBuilder<R>` (`resource.rs`)
-- `ComponentBuilder<C>` (`resource.rs`)
-- `RemoteComponentBuilder<C>` (`resource.rs`)
-- `InvokeBuilder<F>` (`invoke.rs`)
-- `CallBuilder<M>` (`invoke.rs`)
-- `StackReferenceBuilder` (`stack_reference.rs`)
+The nightly toolchain is pinned in `rust-toolchain.toml` (`nightly-2026-03-03`)
+so builds are reproducible regardless.
