@@ -1,14 +1,11 @@
 # TODO — pulumi-core
 
-## Stable Rust Support
+## Stable Rust Support — Non-Goal
 
-Remove the `#![feature(impl_trait_in_assoc_type)]` requirement by boxing
-the futures returned by `IntoFuture` impls on builders. Affected types:
-`ResourceBuilder`, `ReadBuilder`, `ComponentBuilder`, `RemoteComponentBuilder`,
-`InvokeBuilder`, `CallBuilder`, `StackReferenceBuilder`. Also requires
-downgrading from edition 2024 to 2021.
-
-See the root TODO.md for full analysis and recommendations.
+Stable Rust is a non-goal until the next-generation trait solver ships on
+stable. We intentionally use `#![feature(impl_trait_in_assoc_type)]` and
+edition 2024; no workarounds (boxed futures, edition downgrade) are planned.
+See the root TODO.md for rationale.
 
 ## Flesh Out Mock Implementations
 
@@ -32,7 +29,7 @@ With the `MockMonitor`/`MockEngine` traits now in place, adding unit tests
 for resource registration, invocation, and stack operations is feasible
 without a running engine.
 
-## Serde Module Visibility
+## ~~Serde Module Visibility~~ DONE
 
-`serde.rs` is `pub(crate)`. Consider whether any serialization utilities
-should be public for users implementing custom resource types.
+`serde.rs` is now `pub`. `pulumi-engine` uses the shared implementations
+instead of maintaining duplicate conversion functions.

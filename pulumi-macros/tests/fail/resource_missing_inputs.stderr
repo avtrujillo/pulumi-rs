@@ -1,0 +1,13 @@
+error: missing #[pulumi(inputs = Type)]
+  --> tests/fail/resource_missing_inputs.rs:12:8
+   |
+12 | struct MyResource;
+   |        ^^^^^^^^^^
+
+warning: unused import: `Serialize`
+ --> tests/fail/resource_missing_inputs.rs:2:26
+  |
+2 | use serde::{Deserialize, Serialize};
+  |                          ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

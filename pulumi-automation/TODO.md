@@ -2,9 +2,9 @@
 
 ## Tests
 
-No tests exist in this crate. Add:
-- Unit tests for `ConfigValue` construction and serialization
-- Unit tests for `EngineEvent` deserialization from sample CLI JSON output
+~~No tests exist in this crate.~~ Unit tests added for:
+- ~~`ConfigValue` construction and serialization~~ DONE (6 tests)
+- ~~`EngineEvent` deserialization from sample CLI JSON output~~ DONE (5 tests)
 - Integration tests using a real `pulumi` binary (gated behind a feature flag
   or separate workspace member)
 
@@ -23,5 +23,5 @@ No tests exist in this crate. Add:
 
 ## Edition
 
-Currently uses edition 2024 (nightly). Downgrade to 2021 when the workspace
-moves to stable Rust.
+Uses edition 2024 (nightly). Stable Rust is a non-goal until the next-gen
+trait solver ships. See the root TODO.md.

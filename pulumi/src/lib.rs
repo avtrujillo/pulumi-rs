@@ -30,3 +30,9 @@ pub use pulumi_macros::ComponentResource;
 /// See [`pulumi_macros::ProviderFunction`] for usage and examples.
 #[cfg(feature = "macros")]
 pub use pulumi_macros::ProviderFunction;
+
+/// Derive the [`ComponentMethod`](pulumi_core::invoke::ComponentMethod) trait.
+///
+/// See [`pulumi_macros::ComponentMethod`] for usage and examples.
+#[cfg(feature = "macros")]
+pub use pulumi_macros::ComponentMethod;
