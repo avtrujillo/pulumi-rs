@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::secrets::{self, SecretsManager, SecretsProviderState};
 
 /// A registered resource's state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ResourceState {
     /// The auto-assigned URN.
     pub urn: String,
@@ -34,6 +34,63 @@ pub struct ResourceState {
     /// Property names that contain secret values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_properties: Vec<String>,
+}
+
+impl std::fmt::Debug for ResourceState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// Wrapper that replaces secret property values with "[secret]" in Debug output.
+        struct RedactedJson<'a> {
+            value: &'a serde_json::Value,
+            secret_keys: &'a [String],
+        }
+
+        impl std::fmt::Debug for RedactedJson<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self.value {
+                    serde_json::Value::Object(map) => {
+                        let mut dbg = f.debug_map();
+                        for (k, v) in map {
+                            if self.secret_keys.contains(k)
+                                || v.as_object()
+                                    .is_some_and(|m| m.contains_key(pulumi_core::serde::SECRET_SIG))
+                            {
+                                dbg.entry(k, &"[secret]");
+                            } else {
+                                dbg.entry(k, v);
+                            }
+                        }
+                        dbg.finish()
+                    }
+                    other => std::fmt::Debug::fmt(other, f),
+                }
+            }
+        }
+
+        f.debug_struct("ResourceState")
+            .field("urn", &self.urn)
+            .field("id", &self.id)
+            .field("resource_type", &self.resource_type)
+            .field("name", &self.name)
+            .field("custom", &self.custom)
+            .field("parent", &self.parent)
+            .field(
+                "inputs",
+                &RedactedJson {
+                    value: &self.inputs,
+                    secret_keys: &self.secret_properties,
+                },
+            )
+            .field(
+                "outputs",
+                &RedactedJson {
+                    value: &self.outputs,
+                    secret_keys: &self.secret_properties,
+                },
+            )
+            .field("dependencies", &self.dependencies)
+            .field("secret_properties", &self.secret_properties)
+            .finish()
+    }
 }
 
 /// Serializable checkpoint format for persisting state to disk.
@@ -68,8 +125,48 @@ impl Checkpoint {
         }
     }
 
+    /// Returns `true` if any resource inputs/outputs or stack outputs contain
+    /// secret wrappers whose inner value is plaintext (not a `"v1:..."` ciphertext).
+    fn has_plaintext_secrets(&self) -> bool {
+        fn has_plaintext(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if map.contains_key(pulumi_core::serde::SECRET_SIG) {
+                        // Secret wrapper — check if value is NOT already encrypted.
+                        match map.get("value") {
+                            Some(serde_json::Value::String(s)) if s.starts_with("v1:") => false,
+                            Some(_) => true,
+                            None => false,
+                        }
+                    } else {
+                        map.values().any(has_plaintext)
+                    }
+                }
+                serde_json::Value::Array(arr) => arr.iter().any(has_plaintext),
+                _ => false,
+            }
+        }
+        for res in &self.resources {
+            if has_plaintext(&res.inputs) || has_plaintext(&res.outputs) {
+                return true;
+            }
+        }
+        has_plaintext(&self.outputs)
+    }
+
     /// Save the checkpoint to a JSON file, creating parent directories if needed.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// In debug builds, panics if the checkpoint contains a `secrets_provider`
+    /// (indicating encryption was expected) but is being saved without
+    /// encryption. Use [`save_encrypted`](Self::save_encrypted) instead.
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+        debug_assert!(
+            self.secrets_provider.is_none() || !self.has_plaintext_secrets(),
+            "Checkpoint::save() called with plaintext secrets present. \
+             Use save_encrypted() when a secrets provider is configured.",
+        );
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -508,5 +605,57 @@ mod tests {
         // Building a new checkpoint from engine state should carry it forward.
         let new_cp = state.to_checkpoint().await;
         assert!(new_cp.secrets_provider.is_some());
+    }
+
+    #[test]
+    fn resource_state_debug_redacts_secrets() {
+        let state = ResourceState {
+            urn: "urn:pulumi:dev::proj::pkg:mod:Res::name".into(),
+            id: "id-1".into(),
+            resource_type: "pkg:mod:Res".into(),
+            name: "name".into(),
+            custom: true,
+            parent: String::new(),
+            inputs: serde_json::json!({
+                "name": "my-bucket",
+                "password": secret_value(serde_json::json!("hunter2")),
+            }),
+            outputs: serde_json::json!({
+                "arn": "arn:aws:s3:::my-bucket",
+                "connectionString": secret_value(serde_json::json!("postgres://host/db")),
+            }),
+            dependencies: vec![],
+            secret_properties: vec!["password".into(), "connectionString".into()],
+        };
+
+        let debug_output = format!("{state:?}");
+
+        // Secret values must NOT appear in debug output.
+        assert!(!debug_output.contains("hunter2"));
+        assert!(!debug_output.contains("postgres://host/db"));
+
+        // Non-secret values SHOULD appear.
+        assert!(debug_output.contains("my-bucket"));
+        assert!(debug_output.contains("arn:aws:s3:::my-bucket"));
+
+        // Redaction markers should appear.
+        assert!(debug_output.contains("[secret]"));
+    }
+
+    #[test]
+    fn checkpoint_has_plaintext_secrets_detection() {
+        let cp = sample_checkpoint();
+        assert!(cp.has_plaintext_secrets());
+
+        // An empty checkpoint should not have plaintext secrets.
+        let empty = Checkpoint {
+            version: 1,
+            project: "p".into(),
+            stack: "s".into(),
+            resources: vec![],
+            outputs: serde_json::json!({}),
+            secrets_provider: None,
+        };
+        assert!(!empty.has_plaintext_secrets());
     }
 }

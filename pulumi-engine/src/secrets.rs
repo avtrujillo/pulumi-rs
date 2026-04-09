@@ -150,9 +150,9 @@ impl PassphraseSecretsManager {
     pub fn from_salt(passphrase: &str, salt_string: &str) -> Result<Self, SecretsError> {
         let parts: Vec<&str> = salt_string.splitn(3, ':').collect();
         if parts.len() != 3 || parts[0] != "v1" {
-            return Err(SecretsError::InvalidSalt(format!(
-                "expected 'v1:HEX:BASE64', got '{salt_string}'"
-            )));
+            return Err(SecretsError::InvalidSalt(
+                "expected format 'v1:HEX_SALT:BASE64_VALIDATION'".to_string(),
+            ));
         }
 
         let salt = hex_decode(parts[1]).map_err(|e| {
@@ -310,13 +310,20 @@ pub async fn encrypt_secrets<S: SecretsManager>(
         serde_json::Value::Object(map) => {
             if map.contains_key(SECRET_SIG) {
                 // This is a secret wrapper — encrypt the inner value.
+                // Skip if already encrypted (value is a "v1:..." string).
                 if let Some(inner) = map.get("value") {
-                    let plaintext = serde_json::to_vec(inner).expect("JSON serialization");
-                    let ciphertext = manager.encrypt(&plaintext).await?;
-                    map.insert(
-                        "value".to_string(),
-                        serde_json::Value::String(ciphertext),
+                    let already_encrypted = matches!(
+                        inner,
+                        serde_json::Value::String(s) if s.starts_with("v1:")
                     );
+                    if !already_encrypted {
+                        let plaintext = serde_json::to_vec(inner).expect("JSON serialization");
+                        let ciphertext = manager.encrypt(&plaintext).await?;
+                        map.insert(
+                            "value".to_string(),
+                            serde_json::Value::String(ciphertext),
+                        );
+                    }
                 }
             } else {
                 // Recurse into non-secret objects.
@@ -503,5 +510,77 @@ mod tests {
         let restored = PassphraseSecretsManager::from_salt("my-pass", salt).unwrap();
         let restored_state = restored.state().await;
         assert_eq!(state.state, restored_state.state);
+    }
+
+    #[tokio::test]
+    async fn double_encrypt_is_idempotent() {
+        let mgr = PassphraseSecretsManager::new("pass").unwrap();
+
+        let mut value = serde_json::json!({
+            "secret": {
+                SECRET_SIG: "1b47061264138c4ac30d75fd1eb44270",
+                "value": "plaintext"
+            }
+        });
+
+        // Encrypt once.
+        encrypt_secrets(&mut value, &mgr).await.unwrap();
+        let after_first = value.clone();
+
+        // Encrypt again — should be a no-op (value already starts with "v1:").
+        encrypt_secrets(&mut value, &mgr).await.unwrap();
+
+        // The ciphertext should be unchanged (not double-encrypted).
+        assert_eq!(
+            value["secret"]["value"].as_str().unwrap(),
+            after_first["secret"]["value"].as_str().unwrap(),
+        );
+
+        // Should still decrypt correctly.
+        decrypt_secrets(&mut value, &mgr).await.unwrap();
+        assert_eq!(value["secret"]["value"], "plaintext");
+    }
+
+    #[tokio::test]
+    async fn decrypt_skips_unencrypted_secrets() {
+        let mgr = PassphraseSecretsManager::new("pass").unwrap();
+
+        // A secret wrapper with a plaintext (non-"v1:") value — e.g. from
+        // a checkpoint that was never encrypted.
+        let mut value = serde_json::json!({
+            "password": {
+                SECRET_SIG: "1b47061264138c4ac30d75fd1eb44270",
+                "value": "plaintext-password"
+            }
+        });
+        let original = value.clone();
+
+        // Decrypting should leave it unchanged (no "v1:" prefix to decrypt).
+        decrypt_secrets(&mut value, &mgr).await.unwrap();
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn invalid_salt_error_does_not_leak_salt() {
+        let result = PassphraseSecretsManager::from_salt("pass", "bad-format");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // The error message should NOT contain the raw input.
+        assert!(!msg.contains("bad-format"));
+        assert!(msg.contains("expected format"));
+    }
+
+    #[test]
+    fn debug_does_not_show_key() {
+        let mgr = PassphraseSecretsManager::new("my-secret-passphrase").unwrap();
+        let debug = format!("{mgr:?}");
+
+        // Should show the salt hex but NOT the key or passphrase.
+        assert!(debug.contains("PassphraseSecretsManager"));
+        assert!(debug.contains("salt"));
+        assert!(!debug.contains("my-secret-passphrase"));
+        // The key is 32 bytes — verify no 64-char hex string appears
+        // (the salt is only 16 hex chars).
+        assert!(!debug.contains("key"));
     }
 }
