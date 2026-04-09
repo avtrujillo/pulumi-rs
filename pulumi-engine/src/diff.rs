@@ -120,6 +120,7 @@ mod tests {
             inputs: serde_json::json!({"key": "value"}),
             outputs: serde_json::json!({"key": "value"}),
             dependencies: vec![],
+            secret_properties: vec![],
         };
         let diff = diff_resource(
             &prior.urn,
@@ -142,6 +143,7 @@ mod tests {
             inputs: serde_json::json!({"key": "old-value"}),
             outputs: serde_json::json!({"key": "old-value"}),
             dependencies: vec![],
+            secret_properties: vec![],
         };
         let diff = diff_resource(
             &prior.urn,
@@ -164,6 +166,7 @@ mod tests {
             inputs: serde_json::json!({"key": "old", "ignored": "old"}),
             outputs: serde_json::json!({}),
             dependencies: vec![],
+            secret_properties: vec![],
         };
         // Only "ignored" changed, and it's in ignore_changes.
         let diff = diff_resource(

@@ -15,6 +15,8 @@ pub enum Error {
     },
     /// Failed to spawn the user program.
     Spawn(std::io::Error),
+    /// Secret encryption or decryption error.
+    Secrets(crate::secrets::SecretsError),
     /// A custom error.
     Custom(String),
 }
@@ -28,6 +30,7 @@ impl fmt::Display for Error {
                 write!(f, "program failed (exit code {code}):\n{stderr}")
             }
             Error::Spawn(e) => write!(f, "failed to spawn program: {e}"),
+            Error::Secrets(e) => write!(f, "secrets error: {e}"),
             Error::Custom(msg) => write!(f, "{msg}"),
         }
     }
@@ -50,6 +53,12 @@ impl From<std::io::Error> for Error {
 impl From<tonic::Status> for Error {
     fn from(s: tonic::Status) -> Self {
         Error::ProviderStatus(s)
+    }
+}
+
+impl From<crate::secrets::SecretsError> for Error {
+    fn from(e: crate::secrets::SecretsError) -> Self {
+        Error::Secrets(e)
     }
 }
 

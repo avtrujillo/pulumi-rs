@@ -7,6 +7,7 @@
 use crate::diff::{self, ResourceAction};
 use crate::provider::{self, Provider, ProviderManager};
 use crate::pulumirpc;
+use crate::secrets::is_json_secret;
 use crate::state::{EngineState, ResourceState};
 use tonic::{Request, Response, Status};
 
@@ -301,6 +302,14 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
 
         let dependencies = req.dependencies.clone();
 
+        // Collect secret property names from inputs, outputs, and the
+        // additional_secret_outputs declared by the program.
+        let mut secret_props: Vec<String> = collect_secret_keys(&inputs);
+        secret_props.extend(collect_secret_keys(&outputs_json));
+        secret_props.extend(req.additional_secret_outputs.iter().cloned());
+        secret_props.sort();
+        secret_props.dedup();
+
         let resource_state = ResourceState {
             urn: urn.clone(),
             id: id.clone(),
@@ -311,6 +320,7 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             inputs,
             outputs: outputs_json,
             dependencies,
+            secret_properties: secret_props,
         };
         self.state.register_resource(resource_state).await;
 
@@ -393,4 +403,17 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
 /// Convert a protobuf Struct to a serde_json::Value.
 pub(crate) fn proto_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
     pulumi_core::serde::struct_to_json(s)
+}
+
+/// Collect top-level property names whose values are secret-wrapped.
+fn collect_secret_keys(value: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let serde_json::Value::Object(map) = value {
+        for (k, v) in map {
+            if is_json_secret(v) {
+                keys.push(k.clone());
+            }
+        }
+    }
+    keys
 }

@@ -7,6 +7,7 @@
 use crate::error::{Error, Result};
 use crate::stack::{OutputValue, UpResult};
 use crate::workspace::LocalWorkspace;
+use pulumi_engine::secrets::PassphraseSecretsManager;
 use pulumi_engine::{EngineOptions, PulumiEngine};
 use std::collections::HashMap;
 
@@ -50,6 +51,28 @@ impl NativeStack {
             .unwrap_or("project")
             .to_string();
 
+        // If PULUMI_CONFIG_PASSPHRASE is set, create a passphrase-based
+        // secrets manager so checkpoint secrets are encrypted at rest.
+        let secrets_manager = std::env::var("PULUMI_CONFIG_PASSPHRASE")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .and_then(|passphrase| {
+                // Try to restore from an existing checkpoint's salt first.
+                let checkpoint_path = self
+                    .workspace
+                    .work_dir()
+                    .join(".pulumi-rs")
+                    .join(format!("{}.json", self.name));
+                if let Ok(Some(cp)) = pulumi_engine::Checkpoint::load(&checkpoint_path)
+                    && let Some(sp) = &cp.secrets_provider
+                    && let Some(salt) = sp.state.get("salt").and_then(|s| s.as_str())
+                {
+                    return PassphraseSecretsManager::from_salt(&passphrase, salt).ok();
+                }
+                // No prior checkpoint or salt — create fresh.
+                PassphraseSecretsManager::new(&passphrase).ok()
+            });
+
         EngineOptions {
             project,
             stack: self.name.clone(),
@@ -58,6 +81,7 @@ impl NativeStack {
             dry_run,
             env: HashMap::new(),
             checkpoint_path: None,
+            secrets_manager,
         }
     }
 
@@ -130,17 +154,27 @@ impl NativeStack {
 }
 
 /// Convert serde_json::Value outputs into the HashMap<String, OutputValue> format.
+///
+/// Detects secret-wrapped values (containing the Pulumi magic signature key)
+/// and sets the `secret` flag accordingly, unwrapping the inner value.
 fn convert_outputs(value: &serde_json::Value) -> HashMap<String, OutputValue> {
+    use pulumi_engine::secrets::is_json_secret;
+
     let mut map = HashMap::new();
     if let serde_json::Value::Object(obj) = value {
         for (k, v) in obj {
-            map.insert(
-                k.clone(),
-                OutputValue {
-                    value: v.clone(),
-                    secret: false,
-                },
-            );
+            let (output_value, secret) = if is_json_secret(v) {
+                // Unwrap the secret: extract the inner "value" field.
+                let inner = v
+                    .as_object()
+                    .and_then(|m| m.get("value"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                (inner, true)
+            } else {
+                (v.clone(), false)
+            };
+            map.insert(k.clone(), OutputValue { value: output_value, secret });
         }
     }
     map
