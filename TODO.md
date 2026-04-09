@@ -1,5 +1,22 @@
 # TODO
 
+## Roadmap
+
+| # | Item | Crate | Effort |
+|---|------|-------|--------|
+| 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium |
+| 2 | TestContext builder | `pulumi-core` | Medium |
+| 3 | Secret encryption | `pulumi-engine` | Large |
+| 4 | Transforms | `pulumi-engine` | Medium |
+| 5 | Refresh improvements | `pulumi-engine` | Medium |
+| 6 | NativeStack parity | `pulumi-automation` | Medium |
+| 7 | Engine test coverage | `pulumi-engine` | Medium |
+| 8 | Code generation | new crate | XL |
+| 9 | Integration tests | new crate | Large |
+| 10 | crates.io publishing | all | Medium |
+
+---
+
 ## Mock / Test Framework
 
 **Purpose:** Let users unit-test their Pulumi programs without deploying anything.
