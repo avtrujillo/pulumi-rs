@@ -26,7 +26,7 @@ cargo clippy         # Lint
 cargo test <name>    # Run a single test by name
 ```
 
-Protobuf client stubs are generated at build time by `build.rs` using `tonic-build`. No server code is generated. Requires `protoc` on the system PATH. Generated types are accessed internally via `crate::proto::pulumirpc`.
+Protobuf client and server stubs are generated at build time by `build.rs` using `tonic-build` (`build_server(true)`). Requires `protoc` on the system PATH. Generated types are accessed via `crate::proto::pulumirpc`. Server stubs are used by `pulumi-engine` to implement the ResourceMonitor and Engine gRPC services.
 
 ## Architecture
 
@@ -39,14 +39,17 @@ The SDK entry point is `pulumi_core::run(program)` in `pulumi-core/src/lib.rs`, 
 
 ### Key modules (in `pulumi-core/src/`)
 
+- **`connection.rs`** — Trait abstractions (`MonitorConnection`, `EngineConnection`) over the gRPC connections. Uses RPITIT (return-position `impl Trait` in traits) for zero-cost async dispatch. Provides `GrpcMonitor`/`GrpcEngine` (real gRPC) and `MockMonitor`/`MockEngine` (for testing).
 - **`output.rs`** — `Output<T>`, the core Pulumi type representing potentially-unknown, potentially-secret async values. Wraps `Shared<BoxFuture<T>>` with dependency/secret/known metadata. Supports `map`, `flat_map`, `all`, `all2`, `all3` combinators. `OutputResolver` resolves or rejects pending outputs (auto-rejects on drop).
-- **`context.rs`** — `Context` holds gRPC clients (`ResourceMonitorClient`, `EngineClient`) behind `Arc<Mutex<>>`. `Settings` parses all `PULUMI_*` env vars. Provides config access via `get_config()`/`require_config()`.
-- **`resource.rs`** — `CustomResource` builder for registering resources. Also exposes `register_component_resource()`, `register_remote_component()`, `read_resource()`, `register_resource_outputs()`. Registration returns `(Output<urn>, Output<id>, Output<outputs>)`.
-- **`invoke.rs`** — `invoke()` calls read-only provider functions; `call()` invokes component methods with dependency tracking.
+- **`context.rs`** — `Context<M, E>` is generic over `MonitorConnection` and `EngineConnection`. `Settings` parses all `PULUMI_*` env vars. Provides config access via `get_config()`/`require_config()`.
+- **`resource.rs`** — `Resource` trait and `ResourceBuilder` for registering resources. Also exposes `ComponentBuilder`, `RemoteComponentBuilder`, `ReadBuilder`. All builders implement `IntoFuture` for `.await`.
+- **`invoke.rs`** — `ProviderFunction` trait with `InvokeBuilder`; `ComponentMethod` trait with `CallBuilder`. Both implement `IntoFuture`.
 - **`serde.rs`** — Bidirectional JSON ↔ Protobuf Struct conversion. Handles Pulumi wire format for secrets (magic key `4dabf18193072939515e22adb298388d`) and unknowns (sentinel UUID `04da6b54-80e4-46f7-96ec-b56ff0331ba9`).
 - **`error.rs`** — `Error` enum with variants for transport, RPC, missing env, serde, resource failure, invoke failure, and custom errors.
 - **`log.rs`** — `debug()`, `info()`, `warn()`, `error()`, `status()` send log messages to the Pulumi engine.
 - **`stack.rs`** — Registers root stack resource (`pulumi:pulumi:Stack`) and exports outputs.
+- **`stack_reference.rs`** — `StackReference` / `StackReferenceBuilder` for cross-stack references.
+- **`transform.rs`** — `register_stack_transform()` for global resource transforms. Lazily starts a callback gRPC server.
 
 ### Proto definitions
 
@@ -54,9 +57,10 @@ Located in `pulumi-core/proto/pulumi/`. Key services: `ResourceMonitor` (resourc
 
 ### Key patterns
 
-- **`CustomResource` builder**: Fluent API — `CustomResource::new(ctx, type, name)` → `.inputs()` → `.options()` → `.parent()` → `.provider()` → `.depends_on()` → `.register().await` returns `(Output<urn>, Output<id>, Output<outputs>)`.
+- **`ResourceBuilder` pattern**: Fluent API — `ResourceBuilder::<R>::new(&ctx, name, inputs)` → `.options()` → `.parent()` → `.provider()` → `.depends_on()` → `.await` returns `RegisteredResource<R>`.
 - **`Output<T>` resolution**: Create with `Output::new()` which returns `(Output<T>, OutputResolver<T>)`. The resolver must be used to complete the output; dropping it without resolving triggers auto-rejection.
-- **Tests**: Unit tests live in `#[cfg(test)] mod tests` within `output.rs` (15 async tests) and `serde.rs` (2 tests). All async tests use `#[tokio::test]`.
+- **Connection traits**: `MonitorConnection` and `EngineConnection` abstract over gRPC clients, enabling mock implementations for testing without a running engine.
+- **Tests**: Unit tests live in `#[cfg(test)] mod tests` within `output.rs` (15 async tests), `context.rs` (10 tests), and `serde.rs` (2 tests). All async tests use `#[tokio::test]`.
 
 ## Conventions
 
@@ -64,3 +68,5 @@ Located in `pulumi-core/proto/pulumi/`. Key services: `ResourceMonitor` (resourc
 - `Output<T>` implements `IntoFuture` so it can be `.await`ed directly
 - Thread safety via `Arc<Mutex<>>` on shared state
 - Doctests are disabled (`doctest = false` in Cargo.toml)
+- Connection traits use RPITIT for zero-cost async dispatch (no boxing, no vtables)
+- Nightly toolchain pinned in `rust-toolchain.toml` (`nightly-2026-03-03`)

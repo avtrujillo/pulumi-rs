@@ -9,7 +9,7 @@ cargo build -p pulumi-engine    # Requires protoc on PATH (needed by pulumi-core
 cargo test -p pulumi-engine     # 4 diff tests
 ```
 
-Uses protobuf types and gRPC server traits from `pulumi_core::proto::pulumirpc` (the proto module is public). No separate proto compilation — `pulumi-core` generates both client and server stubs.
+Uses protobuf types and gRPC server traits from `pulumi_core::proto::pulumirpc` (the proto module is public). No separate proto compilation — `pulumi-core` generates both client and server stubs (`build_server(true)`).
 
 Doctests are disabled (`doctest = false`).
 
@@ -56,10 +56,11 @@ PulumiEngine::refresh()
 |--------|---------|
 | `orchestrator.rs` | `PulumiEngine` with `up()`, `preview()`, `destroy()`, `refresh()`. `EngineOptions` configures project/stack/program/checkpoint path. |
 | `engine_service.rs` | Implements the `Engine` gRPC service: `Log` (prints to stderr), `GetRootResource`, `SetRootResource`, `StartDebugging` (no-op), `RequirePulumiVersion` (accepts any). |
-| `monitor_service.rs` | Implements the `ResourceMonitor` gRPC service. `RegisterResource` diffs against prior state to determine create/update/same. `RegisterResourceOutputs` captures stack outputs. `Invoke`/`Call` are stubs. |
+| `monitor_service.rs` | Implements the `ResourceMonitor` gRPC service. `RegisterResource` diffs against prior state to determine create/update/same. `RegisterResourceOutputs` captures stack outputs. `Invoke`/`Call` delegate to real provider plugins via `ProviderManager`. |
 | `diff.rs` | `diff_resource()` compares new inputs against prior `ResourceState`. Returns `ResourceAction` (Create/Update/Same). Supports `ignore_changes`. 4 unit tests. |
 | `state.rs` | `EngineState` — shared state behind `Arc<Mutex<>>`. Tracks current + prior resources, root URN, stack outputs. `Checkpoint` for JSON serialization to disk. |
-| `error.rs` | `Error` enum: `Transport`, `ProgramFailed`, `Spawn`, `Custom`. |
+| `provider.rs` | `Provider` trait for abstracting over provider implementations (RPITIT). `GrpcProvider` launches real provider plugins as subprocesses and communicates via gRPC. `ProviderManager<P>` caches provider instances by package name. |
+| `error.rs` | `Error` enum: `Transport`, `ProviderStatus`, `ProgramFailed`, `Spawn`, `Custom`. |
 
 ## State persistence
 
@@ -72,10 +73,9 @@ On subsequent `up()` calls, prior state is loaded and used for diffing. On `dest
 
 ## Current limitations (TODOs)
 
-- **No provider plugins**: `RegisterResource` assigns synthetic IDs instead of calling real providers. `Invoke` and `Call` return empty results.
 - **No secret encryption**: Secrets are not encrypted in the checkpoint.
-- **No transforms**: `RegisterStackTransform` is accepted but ignored.
-- **No provider reads on refresh**: `refresh()` re-saves the checkpoint without actually querying providers.
+- **No transforms**: `RegisterStackTransform` and `RegisterStackInvokeTransform` are accepted but ignored.
+- **Partial refresh**: `refresh()` calls `provider.read()` for each custom resource, but state syncing is best-effort.
 
 ## Integration with pulumi-automation
 

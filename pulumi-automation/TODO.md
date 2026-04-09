@@ -1,0 +1,27 @@
+# TODO — pulumi-automation
+
+## Tests
+
+No tests exist in this crate. Add:
+- Unit tests for `ConfigValue` construction and serialization
+- Unit tests for `EngineEvent` deserialization from sample CLI JSON output
+- Integration tests using a real `pulumi` binary (gated behind a feature flag
+  or separate workspace member)
+
+## NativeStack Parity
+
+`NativeStack` (behind `native-engine` feature) mirrors `Stack` but currently:
+- Sets `secret: false` for all output values (no secret detection)
+- Does not support config operations (`get_config`, `set_config`, etc.)
+- Does not surface engine events the way the CLI-based `Stack` does
+
+## Error Handling Improvements
+
+- `CommandFailed` includes raw stdout/stderr — consider parsing structured
+  error output when available
+- Add `From<pulumi_engine::Error>` conversion for the `native-engine` path
+
+## Edition
+
+Currently uses edition 2024 (nightly). Downgrade to 2021 when the workspace
+moves to stable Rust.

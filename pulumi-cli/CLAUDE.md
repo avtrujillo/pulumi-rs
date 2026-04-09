@@ -36,7 +36,7 @@ pulumi-rs [--cwd <PATH>] <COMMAND>
 
 ## Source Structure
 
-Single file: `src/main.rs` (~190 lines). Uses clap derive for a `Cli` struct with `Commands` enum. Each command variant maps directly to `LocalWorkspace` / `Stack` methods from `pulumi-automation`. Errors are printed to stderr with exit code 1.
+Single file: `src/main.rs` (~188 lines). Uses clap derive for a `Cli` struct with `Commands` enum. Each command variant maps directly to `LocalWorkspace` / `Stack` methods from `pulumi-automation`. Errors are printed to stderr with exit code 1.
 
 ## Architecture
 

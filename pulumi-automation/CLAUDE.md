@@ -27,8 +27,13 @@ Doctests are disabled (`doctest = false`).
 
 - **tokio** (process, io-util) — async subprocess spawning
 - **serde / serde_json** — JSON parsing of CLI output
-- **thiserror** — error type definitions
+- **thiserror** v2 — error type definitions
+- **pulumi-engine** (optional, via `native-engine` feature) — Rust-native engine backend
 - **clap** is NOT a dependency (that's in `pulumi-cli`)
+
+## Features
+
+- **`native-engine`** — Enables `NativeStack`, which uses the Rust-native `pulumi-engine` instead of spawning the `pulumi` CLI binary. Adds a dependency on `pulumi-engine`.
 
 ## Module Guide
 
@@ -40,6 +45,7 @@ Doctests are disabled (`doctest = false`).
 | `config.rs` | `ConfigValue` — value + secret flag. Constructors: `plaintext()`, `secret()`. Implements `From<String>` and `From<&str>`. |
 | `event.rs` | `EngineEvent` and sub-types (`PreludeEvent`, `ResourcePreEvent`, `SummaryEvent`, `DiagnosticEvent`) for parsing structured CLI JSON output. |
 | `error.rs` | `Error` enum: `CliNotFound`, `CommandFailed`, `Io`, `Json`, `StackNotFound`, `StackAlreadyExists`, `Custom`. |
+| `native.rs` | `NativeStack` — alternative to `Stack` that uses `pulumi-engine` directly instead of CLI subprocess. Feature-gated behind `native-engine`. Methods: `up()`, `preview()`, `destroy()`, `refresh()`. |
 
 ## Result Types
 
