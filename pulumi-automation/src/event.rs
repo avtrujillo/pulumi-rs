@@ -103,3 +103,91 @@ pub struct DiagnosticEvent {
     /// The diagnostic message.
     pub message: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_prelude_event() {
+        let json = r#"{"sequence": 1, "preludeEvent": {"config": {"aws:region": "us-east-1"}}}"#;
+        let event: EngineEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sequence, 1);
+        let prelude = event.prelude_event.expect("prelude_event should be Some");
+        assert_eq!(prelude.config["aws:region"], "us-east-1");
+        assert!(event.resource_pre_event.is_none());
+        assert!(event.summary_event.is_none());
+        assert!(event.diagnostic_event.is_none());
+    }
+
+    #[test]
+    fn deserialize_resource_pre_event() {
+        let json = r#"{
+            "sequence": 2,
+            "resourcePreEvent": {
+                "metadata": {
+                    "op": "create",
+                    "urn": "urn:pulumi:dev::project::aws:s3/bucket:Bucket::my-bucket",
+                    "type": "aws:s3/bucket:Bucket",
+                    "new": {
+                        "type": "aws:s3/bucket:Bucket",
+                        "urn": "urn:pulumi:dev::project::aws:s3/bucket:Bucket::my-bucket",
+                        "inputs": {"bucket": "my-bucket"},
+                        "outputs": {}
+                    }
+                }
+            }
+        }"#;
+        let event: EngineEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sequence, 2);
+        let rpe = event
+            .resource_pre_event
+            .expect("resource_pre_event should be Some");
+        assert_eq!(rpe.metadata.op, "create");
+        assert_eq!(
+            rpe.metadata.urn,
+            "urn:pulumi:dev::project::aws:s3/bucket:Bucket::my-bucket"
+        );
+        assert_eq!(rpe.metadata.resource_type, "aws:s3/bucket:Bucket");
+        assert!(rpe.metadata.old.is_none());
+        let new_state = rpe.metadata.new.expect("new state should be Some");
+        assert_eq!(new_state.resource_type, "aws:s3/bucket:Bucket");
+        assert_eq!(new_state.inputs["bucket"], "my-bucket");
+    }
+
+    #[test]
+    fn deserialize_summary_event() {
+        let json = r#"{"sequence": 3, "summaryEvent": {"mayUpdate": true, "durationSeconds": 5, "resourceChanges": {"create": 1}}}"#;
+        let event: EngineEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sequence, 3);
+        let summary = event.summary_event.expect("summary_event should be Some");
+        assert!(summary.may_update);
+        assert_eq!(summary.duration_seconds, 5);
+        assert_eq!(summary.resource_changes["create"], 1);
+    }
+
+    #[test]
+    fn deserialize_diagnostic_event() {
+        let json =
+            r#"{"sequence": 4, "diagnosticEvent": {"urn": "", "severity": "info", "message": "hello"}}"#;
+        let event: EngineEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sequence, 4);
+        let diag = event
+            .diagnostic_event
+            .expect("diagnostic_event should be Some");
+        assert_eq!(diag.urn, "");
+        assert_eq!(diag.severity, "info");
+        assert_eq!(diag.message, "hello");
+    }
+
+    #[test]
+    fn deserialize_event_with_only_sequence() {
+        let json = r#"{"sequence": 0}"#;
+        let event: EngineEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sequence, 0);
+        assert!(event.prelude_event.is_none());
+        assert!(event.resource_pre_event.is_none());
+        assert!(event.summary_event.is_none());
+        assert!(event.diagnostic_event.is_none());
+    }
+}

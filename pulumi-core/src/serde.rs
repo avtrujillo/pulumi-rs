@@ -4,8 +4,6 @@
 //! handles the bidirectional conversion with JSON, which is the natural Rust interchange
 //! format via `serde`.
 
-#![allow(dead_code)]
-
 use prost_types::value::Kind;
 use prost_types::{ListValue, Struct, Value};
 use serde_json::Map;

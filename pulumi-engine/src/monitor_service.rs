@@ -392,25 +392,5 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
 
 /// Convert a protobuf Struct to a serde_json::Value.
 pub(crate) fn proto_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    for (k, v) in &s.fields {
-        map.insert(k.clone(), proto_value_to_json(v));
-    }
-    serde_json::Value::Object(map)
-}
-
-fn proto_value_to_json(v: &prost_types::Value) -> serde_json::Value {
-    use prost_types::value::Kind;
-    match &v.kind {
-        Some(Kind::NullValue(_)) => serde_json::Value::Null,
-        Some(Kind::NumberValue(n)) => serde_json::json!(n),
-        Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
-        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
-        Some(Kind::StructValue(s)) => proto_struct_to_json(s),
-        Some(Kind::ListValue(l)) => {
-            let items: Vec<_> = l.values.iter().map(proto_value_to_json).collect();
-            serde_json::Value::Array(items)
-        }
-        None => serde_json::Value::Null,
-    }
+    pulumi_core::serde::struct_to_json(s)
 }

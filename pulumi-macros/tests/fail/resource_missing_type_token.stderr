@@ -1,0 +1,5 @@
+error: missing #[pulumi(type_token = "...")]
+  --> tests/fail/resource_missing_type_token.rs:16:8
+   |
+16 | struct MyResource;
+   |        ^^^^^^^^^^

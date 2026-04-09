@@ -1,0 +1,5 @@
+error: missing #[pulumi(token = "...")]
+  --> tests/fail/provider_function_missing_token.rs:16:8
+   |
+16 | struct MyFunc;
+   |        ^^^^^^

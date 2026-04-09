@@ -11,6 +11,7 @@
 //! - [`Resource`] — Derive the `Resource` trait for a custom cloud resource.
 //! - [`ComponentResource`] — Derive the `ComponentResource` trait for a logical grouping.
 //! - [`ProviderFunction`] — Derive the `ProviderFunction` trait for a read-only provider function.
+//! - [`ComponentMethod`] — Derive the `ComponentMethod` trait for a component method.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -233,6 +234,94 @@ pub fn derive_provider_function(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl ::pulumi_core::invoke::ProviderFunction for #name {
+            const TOKEN: &'static str = #token;
+            const VERSION: &'static str = #version;
+            const PLUGIN_DOWNLOAD_URL: &'static str = #plugin_download_url;
+            type Args = #args_ty;
+            type Returns = #returns_ty;
+        }
+    };
+
+    expanded.into()
+}
+
+/// Derives the `ComponentMethod` trait for a method on a remote component resource.
+///
+/// # Required Attributes
+///
+/// - `#[pulumi(token = "...")]` — The method token (e.g. `"my:module:MyComponent/doThing"`)
+/// - `#[pulumi(args = SomeArgsType)]` — The arguments type (must impl `Serialize`)
+/// - `#[pulumi(returns = SomeReturnType)]` — The return type (must impl `DeserializeOwned`)
+///
+/// # Optional Attributes
+///
+/// - `#[pulumi(version = "...")]` — Provider plugin version
+/// - `#[pulumi(plugin_download_url = "...")]` — Provider plugin download URL
+///
+/// # Example
+///
+/// ```ignore
+/// use pulumi::ComponentMethod;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Serialize)]
+/// struct DoThingArgs {
+///     input: String,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct DoThingResult {
+///     output: String,
+/// }
+///
+/// #[derive(ComponentMethod)]
+/// #[pulumi(token = "my:module:MyComponent/doThing")]
+/// #[pulumi(args = DoThingArgs)]
+/// #[pulumi(returns = DoThingResult)]
+/// struct MyComponentDoThing;
+/// ```
+#[proc_macro_derive(ComponentMethod, attributes(pulumi))]
+pub fn derive_component_method(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let name = &input.ident;
+    let attrs = match parse_pulumi_attrs(&input) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let token = match &attrs.token {
+        Some(t) => t.clone(),
+        None => {
+            return syn::Error::new_spanned(&input.ident, "missing #[pulumi(token = \"...\")]")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let args_ty = match &attrs.args {
+        Some(t) => t.clone(),
+        None => {
+            return syn::Error::new_spanned(&input.ident, "missing #[pulumi(args = Type)]")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let returns_ty = match &attrs.returns {
+        Some(t) => t.clone(),
+        None => {
+            return syn::Error::new_spanned(&input.ident, "missing #[pulumi(returns = Type)]")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let version = attrs.version.as_deref().unwrap_or("");
+    let plugin_download_url = attrs.plugin_download_url.as_deref().unwrap_or("");
+
+    let expanded = quote! {
+        impl ::pulumi_core::invoke::ComponentMethod for #name {
             const TOKEN: &'static str = #token;
             const VERSION: &'static str = #version;
             const PLUGIN_DOWNLOAD_URL: &'static str = #plugin_download_url;

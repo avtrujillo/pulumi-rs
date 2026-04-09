@@ -79,7 +79,7 @@ pub mod stack;
 pub mod stack_reference;
 pub mod transform;
 
-pub(crate) mod serde;
+pub mod serde;
 
 /// Generated protobuf types for the Pulumi gRPC protocol.
 #[allow(warnings)]

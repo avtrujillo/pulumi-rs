@@ -29,7 +29,7 @@ With the `MockMonitor`/`MockEngine` traits now in place, adding unit tests
 for resource registration, invocation, and stack operations is feasible
 without a running engine.
 
-## Serde Module Visibility
+## ~~Serde Module Visibility~~ DONE
 
-`serde.rs` is `pub(crate)`. Consider whether any serialization utilities
-should be public for users implementing custom resource types.
+`serde.rs` is now `pub`. `pulumi-engine` uses the shared implementations
+instead of maintaining duplicate conversion functions.

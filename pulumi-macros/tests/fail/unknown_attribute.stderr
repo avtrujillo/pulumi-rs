@@ -1,0 +1,5 @@
+error: unknown pulumi attribute: unknown_attr
+  --> tests/fail/unknown_attribute.rs:17:10
+   |
+17 | #[pulumi(unknown_attr = "foo")]
+   |          ^^^^^^^^^^^^

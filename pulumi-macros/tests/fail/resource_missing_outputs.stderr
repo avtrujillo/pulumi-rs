@@ -1,0 +1,5 @@
+error: missing #[pulumi(outputs = Type)]
+  --> tests/fail/resource_missing_outputs.rs:12:8
+   |
+12 | struct MyResource;
+   |        ^^^^^^^^^^
