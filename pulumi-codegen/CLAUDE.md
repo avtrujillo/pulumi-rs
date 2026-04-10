@@ -24,6 +24,42 @@ Next step: Stage 1 (crate skeleton + schema parsing) + Stage 2 (naming utilities
 
 Update this table as stages are completed.
 
+## Session Protocol
+
+At the start of each session working on this crate:
+1. Read this file and `PLAN.md` for context
+2. Check the stage table above — pick up where we left off
+3. After completing a stage, update the status in this table and commit
+
+At the end of each session, present a progress summary in this format:
+
+| Stage | Status | Token Pressure | Notes |
+|-------|--------|---------------|-------|
+| 1 | DONE | Low — independent schema types | |
+| 2 | DONE | Low — self-contained naming functions | |
+| 3 | IN PROGRESS | High — must hold schema + IR + type resolution simultaneously | Blocked on X |
+| ... | | | |
+
+This helps the user gauge how much context window remains and whether to
+continue or start a fresh session. The "Token Pressure" column indicates how
+much context the *next* stage will demand (see PLAN.md's AI-assisted
+development section for the effort/difficulty framework).
+
+**Stage-level context pressure estimates:**
+
+| Stage | Throughput (effort) | Peak Context (difficulty) |
+|-------|-------------------|--------------------------|
+| 1 | Low — one file, mechanical serde types | Low — no cross-module reasoning |
+| 2 | Low — one file, pure functions | Low — self-contained, heavily unit-tested |
+| 3 | High — must resolve refs across schema | High — schema + IR + naming all in context |
+| 4 | High — many files emitted | Moderate — IR is settled, emission is mechanical |
+| 5 | Low — thin CLI wrapper | Low — just wiring clap to lib |
+| 6 | Moderate — fix issues from real schemas | Moderate — debugging requires reading generated code |
+
+Stages 1+2 fit comfortably in one session. Stage 3 is the peak-context stage
+and may need a dedicated session. Stages 4+5 can share a session if 4 goes
+smoothly. Stage 6 may surface issues that feed back into earlier stages.
+
 ## Architecture (Quick Reference)
 
 Three-phase pipeline: **Schema JSON → Resolved IR → Rust source files**.
