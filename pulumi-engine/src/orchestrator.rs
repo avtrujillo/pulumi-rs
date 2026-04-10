@@ -327,6 +327,8 @@ impl<P: Provider> PulumiEngine<P> {
                                                         &inputs,
                                                     );
                                             }
+                                            refreshed.refresh_before_update =
+                                                resp.refresh_before_update;
                                             updated_resources.push(refreshed);
                                         }
                                         Err(e) => {

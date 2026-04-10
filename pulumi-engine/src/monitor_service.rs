@@ -321,6 +321,7 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             outputs: outputs_json,
             dependencies,
             secret_properties: secret_props,
+            refresh_before_update: false,
         };
         self.state.register_resource(resource_state).await;
 
