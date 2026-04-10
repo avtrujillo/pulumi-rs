@@ -13,6 +13,27 @@
 | 7 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
 | 8 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
 
+## AI-Assisted Development: Effort vs Difficulty
+
+**Effort** and **Difficulty** map to different dimensions of LLM resource consumption when working on these tasks with an AI coding assistant:
+
+- **Effort → Total token throughput.** How many files need to be read, how many edits made, how many tool calls issued. High effort means more cumulative tokens across the session — more code generated, more round trips. This is what causes sessions to hit context limits and trigger compression, potentially losing earlier context. It's largely a function of *breadth* — how many things need to change.
+
+- **Difficulty → Peak context window pressure.** How much information needs to be held *simultaneously* to reason correctly. Hard tasks require reading and understanding multiple interconnected modules before writing a single line. This is a function of *depth* — how many moving parts must be in-context at once to make a correct decision.
+
+Effort predicts how many sessions/messages a task takes, while difficulty predicts how likely any single step is to go wrong.
+
+| # | Item | Effort (throughput) | Difficulty (peak context) |
+|---|------|---|---|
+| 1 | Unit test coverage | Many tests to write, but each is independent → moderate total | Low peak — patterns are repetitive, mocks already exist |
+| 2 | TestContext builder | Moderate total — one API surface to build | Moderate peak — mock layer + public API design need to be in context together |
+| 3 | Transforms | Moderate total — not a lot of code | High peak — orchestrator + registration flow + ordering semantics all need to be in-context simultaneously |
+| 4 | NativeStack parity | Moderate total — filling in missing features one by one | Moderate peak — need CLI Stack as reference while building NativeStack |
+| 5 | Engine test coverage | Moderate total — similar scope to #1 | Moderate peak — gRPC server setup and service internals must be understood together |
+| 6 | Code generation | Very high total — massive code output across many files | High peak — schema mapping, naming rules, type system all in-context at once |
+| 7 | Integration tests | High total — many test programs to write | Moderate peak — each test is self-contained |
+| 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
+
 ---
 
 ## Mock / Test Framework
