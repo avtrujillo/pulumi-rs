@@ -2,18 +2,18 @@
 
 ## Roadmap
 
-| # | Item | Crate | Effort |
-|---|------|-------|--------|
-| 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium |
-| 2 | TestContext builder | `pulumi-core` | Medium |
-| 3 | ~~Secret encryption~~ | `pulumi-engine` | ~~Large~~ **Done** |
-| 4 | Transforms | `pulumi-engine` | Medium |
-| 5 | Refresh improvements | `pulumi-engine` | Medium |
-| 6 | NativeStack parity | `pulumi-automation` | Medium |
-| 7 | Engine test coverage | `pulumi-engine` | Medium |
-| 8 | Code generation | new crate | XL |
-| 9 | Integration tests | new crate | Large |
-| 10 | crates.io publishing | all | Medium |
+| # | Item | Crate | Effort | Difficulty | Notes |
+|---|------|-------|--------|------------|-------|
+| 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium | Easy | MockMonitor/MockEngine already exist; mostly writing tests against known interfaces |
+| 2 | TestContext builder | `pulumi-core` | Medium | Medium | Requires designing a clean public API on top of the mock layer; needs per-resource response config and preview-mode (unknown) simulation |
+| 3 | ~~Secret encryption~~ | `pulumi-engine` | ~~Large~~ **Done** | — | AES-256-GCM + PBKDF2; fully implemented and tested |
+| 4 | Transforms | `pulumi-engine` | Medium | Hard | `register_stack_transform` is accepted but silently ignored today; must intercept resource registrations in the orchestrator, apply user-supplied transforms, and handle ordering/conflicts |
+| 5 | Refresh improvements | `pulumi-engine` | Medium | Hard | Requires calling `provider.Read()` to sync actual cloud state, diffing against stored state, and handling schema mismatches between provider versions |
+| 6 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
+| 7 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
+| 8 | Code generation | new crate | XL | Very Hard | Greenfield crate: parse provider JSON schemas, map Pulumi types to Rust, generate structs/enums/derives, handle naming collisions and keyword escaping; largest item on the roadmap |
+| 9 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
+| 10 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
 
 ---
 
