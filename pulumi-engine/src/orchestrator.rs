@@ -287,11 +287,17 @@ impl<P: Provider> PulumiEngine<P> {
                                         .await;
 
                                     match read_result {
+                                        Ok(resp) if resp.id.is_empty() => {
+                                            // Provider returned empty ID — resource
+                                            // was deleted out-of-band. Remove from state.
+                                            eprintln!(
+                                                "[engine] refresh: {} deleted upstream",
+                                                res.urn
+                                            );
+                                        }
                                         Ok(resp) => {
                                             let mut refreshed = res.clone();
-                                            if !resp.id.is_empty() {
-                                                refreshed.id = resp.id;
-                                            }
+                                            refreshed.id = resp.id;
                                             if let Some(props) = resp.properties {
                                                 refreshed.outputs =
                                                     crate::monitor_service::proto_struct_to_json(
