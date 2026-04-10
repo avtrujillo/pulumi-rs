@@ -16,6 +16,7 @@ This is a Cargo workspace. Crates:
 - **`pulumi-automation`** — Automation API: drive stack operations (`up`, `preview`, `destroy`, `refresh`) programmatically by wrapping the Pulumi CLI. Enable the `native-engine` feature to use the Rust-native engine instead.
 - **`pulumi-engine`** — Rust-native Pulumi engine: implements the ResourceMonitor and Engine gRPC servers. Used as an alternative to the Go-based `pulumi` CLI engine.
 - **`pulumi-cli`** — Rust-native CLI for Pulumi stack operations, built on `pulumi-automation`.
+- **`pulumi-codegen`** — **(IN PROGRESS)** Code generator: reads Pulumi provider schema JSON, emits typed Rust crates. See `pulumi-codegen/PLAN.md` for full design and `pulumi-codegen/CLAUDE.md` for implementation status.
 
 ## Build Commands
 
