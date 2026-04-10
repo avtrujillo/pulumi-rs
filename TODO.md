@@ -6,14 +6,12 @@
 |---|------|-------|--------|------------|-------|
 | 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium | Easy | MockMonitor/MockEngine already exist; mostly writing tests against known interfaces |
 | 2 | TestContext builder | `pulumi-core` | Medium | Medium | Requires designing a clean public API on top of the mock layer; needs per-resource response config and preview-mode (unknown) simulation |
-| 3 | ~~Secret encryption~~ | `pulumi-engine` | ~~Large~~ **Done** | — | AES-256-GCM + PBKDF2; fully implemented and tested |
-| 4 | Transforms | `pulumi-engine` | Medium | Hard | `register_stack_transform` is accepted but silently ignored today; must intercept resource registrations in the orchestrator, apply user-supplied transforms, and handle ordering/conflicts |
-| 5 | ~~Refresh improvements~~ | `pulumi-engine` | ~~Medium~~ | ~~Hard~~ **Done** | Drift detection, deleted resource handling, detailed summary output, `refresh_before_update` flag |
-| 6 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
-| 7 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
-| 8 | Code generation | new crate | XL | Very Hard | Greenfield crate: parse provider JSON schemas, map Pulumi types to Rust, generate structs/enums/derives, handle naming collisions and keyword escaping; largest item on the roadmap |
-| 9 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
-| 10 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
+| 3 | Transforms | `pulumi-engine` | Medium | Hard | `register_stack_transform` is accepted but silently ignored today; must intercept resource registrations in the orchestrator, apply user-supplied transforms, and handle ordering/conflicts |
+| 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
+| 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
+| 6 | Code generation | new crate | XL | Very Hard | Greenfield crate: parse provider JSON schemas, map Pulumi types to Rust, generate structs/enums/derives, handle naming collisions and keyword escaping; largest item on the roadmap |
+| 7 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
+| 8 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
 
 ---
 
@@ -30,15 +28,7 @@ over these traits, so mock clients can be injected without gRPC or env vars.
 
 **Remaining work:**
 
-1. ~~**Trait abstraction over gRPC clients.**~~ **DONE** — `MonitorConnection`
-   and `EngineConnection` traits in `pulumi-core/src/connection.rs`. Uses RPITIT
-   for zero-cost async dispatch. `MockMonitor` and `MockEngine` record calls and
-   return canned responses.
-
-2. ~~**`MockEngine`**~~ **DONE** — `MockEngine` in `connection.rs` returns a
-   synthetic root URN and stores logged messages.
-
-3. **`TestContext`** constructor that wires up mock clients without needing
+1. **`TestContext`** constructor that wires up mock clients without needing
    `PULUMI_*` env vars or network connections:
    ```rust
    let ctx = TestContext::new()
@@ -46,14 +36,14 @@ over these traits, so mock clients can be injected without gRPC or env vars.
        .build();
    ```
 
-4. **Assertion helpers** to inspect what was registered:
+2. **Assertion helpers** to inspect what was registered:
    ```rust
    let registrations = ctx.registered_resources();
    assert_eq!(registrations[0].type_token, "aws:s3/bucket:Bucket");
    assert_eq!(registrations[0].name, "my-bucket");
    ```
 
-5. **Preview-mode simulation.** In preview, outputs are "unknown". The mock
+3. **Preview-mode simulation.** In preview, outputs are "unknown". The mock
    framework should support returning unknowns so users can test that their
    `Output::map` / `Output::flat_map` chains handle unknown values correctly.
 
