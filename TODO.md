@@ -8,7 +8,7 @@
 | 2 | TestContext builder | `pulumi-core` | Medium | Medium | Requires designing a clean public API on top of the mock layer; needs per-resource response config and preview-mode (unknown) simulation |
 | 3 | ~~Secret encryption~~ | `pulumi-engine` | ~~Large~~ **Done** | — | AES-256-GCM + PBKDF2; fully implemented and tested |
 | 4 | Transforms | `pulumi-engine` | Medium | Hard | `register_stack_transform` is accepted but silently ignored today; must intercept resource registrations in the orchestrator, apply user-supplied transforms, and handle ordering/conflicts |
-| 5 | Refresh improvements | `pulumi-engine` | Medium | Hard | Requires calling `provider.Read()` to sync actual cloud state, diffing against stored state, and handling schema mismatches between provider versions |
+| 5 | ~~Refresh improvements~~ | `pulumi-engine` | ~~Medium~~ | ~~Hard~~ **Done** | Drift detection, deleted resource handling, detailed summary output, `refresh_before_update` flag |
 | 6 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
 | 7 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
 | 8 | Code generation | new crate | XL | Very Hard | Greenfield crate: parse provider JSON schemas, map Pulumi types to Rust, generate structs/enums/derives, handle naming collisions and keyword escaping; largest item on the roadmap |

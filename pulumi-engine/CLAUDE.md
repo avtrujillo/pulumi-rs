@@ -46,8 +46,11 @@ PulumiEngine::destroy()
 PulumiEngine::refresh()
   |
   +-- Load checkpoint
-  +-- Log each resource (TODO: call provider.Read to sync actual state)
-  +-- Re-save checkpoint
+  +-- For each custom resource, call provider.Read to get live state
+  +-- Diff stored outputs vs live outputs (detect drift + deletions)
+  +-- Remove deleted resources, update drifted state
+  +-- Save checkpoint
+  +-- Return RefreshResult with per-resource RefreshDiff details
 ```
 
 ## Module Guide
@@ -57,7 +60,7 @@ PulumiEngine::refresh()
 | `orchestrator.rs` | `PulumiEngine` with `up()`, `preview()`, `destroy()`, `refresh()`. `EngineOptions` configures project/stack/program/checkpoint path. |
 | `engine_service.rs` | Implements the `Engine` gRPC service: `Log` (prints to stderr), `GetRootResource`, `SetRootResource`, `StartDebugging` (no-op), `RequirePulumiVersion` (accepts any). |
 | `monitor_service.rs` | Implements the `ResourceMonitor` gRPC service. `RegisterResource` diffs against prior state to determine create/update/same. `RegisterResourceOutputs` captures stack outputs. `Invoke`/`Call` delegate to real provider plugins via `ProviderManager`. |
-| `diff.rs` | `diff_resource()` compares new inputs against prior `ResourceState`. Returns `ResourceAction` (Create/Update/Same). Supports `ignore_changes`. 4 unit tests. |
+| `diff.rs` | `diff_resource()` compares new inputs against prior `ResourceState`. Returns `ResourceAction` (Create/Update/Same). Supports `ignore_changes`. `diff_refresh()` compares stored outputs against live provider outputs; returns `RefreshAction` (Same/Updated/Deleted) with changed keys. 10 unit tests. |
 | `state.rs` | `EngineState` — shared state behind `Arc<Mutex<>>`. Tracks current + prior resources, root URN, stack outputs. `Checkpoint` for JSON serialization to disk. `ResourceState` has custom `Debug` that redacts secret properties. 7 tests. |
 | `secrets.rs` | `SecretsManager` trait (RPITIT) and `PassphraseSecretsManager`. AES-256-GCM encryption with PBKDF2-HMAC-SHA256 key derivation. Recursive JSON tree walkers for encrypting/decrypting secret-wrapped values. 15 tests. |
 | `provider.rs` | `Provider` trait for abstracting over provider implementations (RPITIT). `GrpcProvider` launches real provider plugins as subprocesses and communicates via gRPC. `ProviderManager<P>` caches provider instances by package name. |
@@ -95,7 +98,6 @@ The following behaviors were reviewed and confirmed to match the Go Pulumi engin
 ## Current limitations (TODOs)
 
 - **No transforms**: `RegisterStackTransform` and `RegisterStackInvokeTransform` are accepted but ignored.
-- **Partial refresh**: `refresh()` calls `provider.read()` for each custom resource, but state syncing is best-effort.
 
 ## Integration with pulumi-automation
 

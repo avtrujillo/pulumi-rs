@@ -604,3 +604,97 @@ fn format_refresh_summary(diffs: &[RefreshDiff]) -> String {
 
     summary
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::{RefreshAction, RefreshDiff};
+
+    #[test]
+    fn test_format_summary_empty() {
+        assert_eq!(format_refresh_summary(&[]), "");
+    }
+
+    #[test]
+    fn test_format_summary_all_same() {
+        let diffs = vec![
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:A::a".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:B::b".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+        ];
+        let summary = format_refresh_summary(&diffs);
+        assert_eq!(summary, "Refreshed 2 resource(s): 2 unchanged\n");
+    }
+
+    #[test]
+    fn test_format_summary_updated_with_keys() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::aws:s3:Bucket::b".into(),
+            action: RefreshAction::Updated,
+            changed_keys: vec!["tags".into(), "versioning".into()],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 1 resource(s): 1 updated\n"));
+        assert!(summary.contains("~ urn:pulumi:dev::proj::aws:s3:Bucket::b"));
+        assert!(summary.contains("[tags, versioning]"));
+    }
+
+    #[test]
+    fn test_format_summary_updated_no_keys() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::pkg:mod:R::r".into(),
+            action: RefreshAction::Updated,
+            changed_keys: vec![],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.contains("outputs changed\n"));
+        assert!(!summary.contains('['));
+    }
+
+    #[test]
+    fn test_format_summary_deleted() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::aws:ec2:Instance::gone".into(),
+            action: RefreshAction::Deleted,
+            changed_keys: vec![],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 1 resource(s): 1 deleted\n"));
+        assert!(summary.contains("- urn:pulumi:dev::proj::aws:ec2:Instance::gone"));
+        assert!(summary.contains("deleted upstream"));
+    }
+
+    #[test]
+    fn test_format_summary_mixed() {
+        let diffs = vec![
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:A::a".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:B::b".into(),
+                action: RefreshAction::Updated,
+                changed_keys: vec!["size".into()],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:C::c".into(),
+                action: RefreshAction::Deleted,
+                changed_keys: vec![],
+            },
+        ];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 3 resource(s): 1 unchanged, 1 updated, 1 deleted\n"));
+        // Only updated and deleted resources get detail lines.
+        assert!(summary.contains("~ urn:pulumi:dev::proj::pkg:mod:B::b"));
+        assert!(summary.contains("- urn:pulumi:dev::proj::pkg:mod:C::c"));
+        assert!(!summary.contains("pkg:mod:A::a"));
+    }
+}
