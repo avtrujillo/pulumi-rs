@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tonic::transport::Server;
 
+use crate::diff::{RefreshDiff, diff_refresh};
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
@@ -91,6 +92,8 @@ pub struct RefreshResult {
     pub stdout: String,
     /// Any warnings or errors.
     pub stderr: String,
+    /// Per-resource drift information.
+    pub diffs: Vec<RefreshDiff>,
 }
 
 /// The Rust-native Pulumi engine, parameterized over a [`Provider`] implementation.
@@ -266,6 +269,7 @@ impl<P: Provider> PulumiEngine<P> {
             }
             Some(mut cp) => {
                 let mut updated_resources = Vec::new();
+                let mut diffs = Vec::new();
 
                 for res in &cp.resources {
                     eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
@@ -294,15 +298,28 @@ impl<P: Provider> PulumiEngine<P> {
                                                 "[engine] refresh: {} deleted upstream",
                                                 res.urn
                                             );
+                                            diffs.push(diff_refresh(
+                                                &res.urn,
+                                                &res.outputs,
+                                                None,
+                                            ));
                                         }
                                         Ok(resp) => {
+                                            let live_outputs = resp
+                                                .properties
+                                                .as_ref()
+                                                .map(crate::monitor_service::proto_struct_to_json);
+
+                                            diffs.push(diff_refresh(
+                                                &res.urn,
+                                                &res.outputs,
+                                                live_outputs.as_ref(),
+                                            ));
+
                                             let mut refreshed = res.clone();
                                             refreshed.id = resp.id;
-                                            if let Some(props) = resp.properties {
-                                                refreshed.outputs =
-                                                    crate::monitor_service::proto_struct_to_json(
-                                                        &props,
-                                                    );
+                                            if let Some(outputs) = live_outputs {
+                                                refreshed.outputs = outputs;
                                             }
                                             if let Some(inputs) = resp.inputs {
                                                 refreshed.inputs =
@@ -339,17 +356,22 @@ impl<P: Provider> PulumiEngine<P> {
 
                 self.providers.shutdown_all().await;
 
-                let resource_count = updated_resources.len();
                 cp.resources = updated_resources;
                 self.save_checkpoint(&cp, &checkpoint_path).await?;
 
-                summary.push_str(&format!("Refreshed {resource_count} resource(s).\n"));
+                summary = format_refresh_summary(&diffs);
+                return Ok(RefreshResult {
+                    stdout: summary,
+                    stderr: String::new(),
+                    diffs,
+                });
             }
         }
 
         Ok(RefreshResult {
             stdout: summary,
             stderr: String::new(),
+            diffs: vec![],
         })
     }
 
@@ -517,4 +539,66 @@ impl<P: Provider> PulumiEngine<P> {
             stderr,
         })
     }
+}
+
+/// Build a human-readable refresh summary from per-resource diffs.
+fn format_refresh_summary(diffs: &[RefreshDiff]) -> String {
+    use crate::diff::RefreshAction;
+
+    if diffs.is_empty() {
+        return String::new();
+    }
+
+    let mut same = 0u32;
+    let mut updated = 0u32;
+    let mut deleted = 0u32;
+    let mut lines = Vec::new();
+
+    for d in diffs {
+        match d.action {
+            RefreshAction::Same => same += 1,
+            RefreshAction::Updated => {
+                updated += 1;
+                if d.changed_keys.is_empty() {
+                    lines.push(format!("  ~ {} — outputs changed", d.urn));
+                } else {
+                    lines.push(format!(
+                        "  ~ {} — outputs changed: [{}]",
+                        d.urn,
+                        d.changed_keys.join(", "),
+                    ));
+                }
+            }
+            RefreshAction::Deleted => {
+                deleted += 1;
+                lines.push(format!("  - {} — deleted upstream", d.urn));
+            }
+        }
+    }
+
+    let total = same + updated + deleted;
+    let mut summary = format!("Refreshed {total} resource(s):");
+    if same > 0 {
+        summary.push_str(&format!(" {same} unchanged"));
+    }
+    if updated > 0 {
+        if same > 0 {
+            summary.push(',');
+        }
+        summary.push_str(&format!(" {updated} updated"));
+    }
+    if deleted > 0 {
+        if same > 0 || updated > 0 {
+            summary.push(',');
+        }
+        summary.push_str(&format!(" {deleted} deleted"));
+    }
+    summary.push('\n');
+
+    for line in &lines {
+        summary.push_str(line);
+        summary.push('\n');
+    }
+
+    summary
 }
