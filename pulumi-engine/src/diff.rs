@@ -22,6 +22,81 @@ pub struct ResourceDiff {
     pub old: Option<ResourceState>,
 }
 
+/// The action determined for a resource during a refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshAction {
+    /// Resource outputs are unchanged from stored state.
+    Same,
+    /// Resource outputs drifted from stored state.
+    Updated,
+    /// Resource no longer exists upstream.
+    Deleted,
+}
+
+/// The result of diffing a resource's stored state against its live state.
+#[derive(Debug, Clone)]
+pub struct RefreshDiff {
+    pub urn: String,
+    pub action: RefreshAction,
+    /// Output property keys that changed (empty for Same/Deleted).
+    pub changed_keys: Vec<String>,
+}
+
+/// Diff a resource's stored outputs against the live outputs returned by a provider read.
+///
+/// If `live_outputs` is `None`, the resource was deleted upstream.
+pub fn diff_refresh(
+    urn: &str,
+    stored_outputs: &serde_json::Value,
+    live_outputs: Option<&serde_json::Value>,
+) -> RefreshDiff {
+    match live_outputs {
+        None => RefreshDiff {
+            urn: urn.to_string(),
+            action: RefreshAction::Deleted,
+            changed_keys: vec![],
+        },
+        Some(live) => {
+            let changed_keys = collect_changed_keys(stored_outputs, live);
+            let action = if changed_keys.is_empty() {
+                RefreshAction::Same
+            } else {
+                RefreshAction::Updated
+            };
+            RefreshDiff {
+                urn: urn.to_string(),
+                action,
+                changed_keys,
+            }
+        }
+    }
+}
+
+/// Collect the top-level keys that differ between two JSON values.
+fn collect_changed_keys(old: &serde_json::Value, new: &serde_json::Value) -> Vec<String> {
+    match (old, new) {
+        (serde_json::Value::Object(old_map), serde_json::Value::Object(new_map)) => {
+            let mut keys = Vec::new();
+            for (k, new_v) in new_map {
+                match old_map.get(k) {
+                    Some(old_v) if old_v == new_v => {}
+                    _ => keys.push(k.clone()),
+                }
+            }
+            for k in old_map.keys() {
+                if !new_map.contains_key(k) {
+                    keys.push(k.clone());
+                }
+            }
+            keys.sort();
+            keys
+        }
+        _ if old == new => vec![],
+        // Non-object values that differ — no meaningful key breakdown.
+        _ => vec!["<root>".to_string()],
+    }
+}
+
 /// Diff a newly registered resource against optional prior state.
 ///
 /// Compares inputs to determine if the resource needs to be created, updated,
@@ -121,6 +196,7 @@ mod tests {
             outputs: serde_json::json!({"key": "value"}),
             dependencies: vec![],
             secret_properties: vec![],
+            refresh_before_update: false,
         };
         let diff = diff_resource(
             &prior.urn,
@@ -144,6 +220,7 @@ mod tests {
             outputs: serde_json::json!({"key": "old-value"}),
             dependencies: vec![],
             secret_properties: vec![],
+            refresh_before_update: false,
         };
         let diff = diff_resource(
             &prior.urn,
@@ -167,6 +244,7 @@ mod tests {
             outputs: serde_json::json!({}),
             dependencies: vec![],
             secret_properties: vec![],
+            refresh_before_update: false,
         };
         // Only "ignored" changed, and it's in ignore_changes.
         let diff = diff_resource(
@@ -185,5 +263,81 @@ mod tests {
             &["ignored".into()],
         );
         assert_eq!(diff.action, ResourceAction::Update);
+    }
+
+    #[test]
+    fn test_refresh_same_outputs() {
+        let outputs = serde_json::json!({"arn": "arn:aws:s3:::my-bucket", "region": "us-east-1"});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::aws:s3:Bucket::my-bucket",
+            &outputs,
+            Some(&outputs),
+        );
+        assert_eq!(diff.action, RefreshAction::Same);
+        assert!(diff.changed_keys.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_changed_outputs() {
+        let stored = serde_json::json!({"arn": "arn:aws:s3:::my-bucket", "tags": {}});
+        let live = serde_json::json!({"arn": "arn:aws:s3:::my-bucket", "tags": {"env": "prod"}});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::aws:s3:Bucket::my-bucket",
+            &stored,
+            Some(&live),
+        );
+        assert_eq!(diff.action, RefreshAction::Updated);
+        assert_eq!(diff.changed_keys, vec!["tags"]);
+    }
+
+    #[test]
+    fn test_refresh_added_key() {
+        let stored = serde_json::json!({"arn": "arn:aws:s3:::my-bucket"});
+        let live = serde_json::json!({"arn": "arn:aws:s3:::my-bucket", "versioning": true});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::aws:s3:Bucket::my-bucket",
+            &stored,
+            Some(&live),
+        );
+        assert_eq!(diff.action, RefreshAction::Updated);
+        assert_eq!(diff.changed_keys, vec!["versioning"]);
+    }
+
+    #[test]
+    fn test_refresh_removed_key() {
+        let stored = serde_json::json!({"arn": "arn:aws:s3:::my-bucket", "website": "enabled"});
+        let live = serde_json::json!({"arn": "arn:aws:s3:::my-bucket"});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::aws:s3:Bucket::my-bucket",
+            &stored,
+            Some(&live),
+        );
+        assert_eq!(diff.action, RefreshAction::Updated);
+        assert_eq!(diff.changed_keys, vec!["website"]);
+    }
+
+    #[test]
+    fn test_refresh_deleted_resource() {
+        let stored = serde_json::json!({"arn": "arn:aws:s3:::my-bucket"});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::aws:s3:Bucket::my-bucket",
+            &stored,
+            None,
+        );
+        assert_eq!(diff.action, RefreshAction::Deleted);
+        assert!(diff.changed_keys.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_multiple_changed_keys_sorted() {
+        let stored = serde_json::json!({"z_field": 1, "a_field": 2, "m_field": 3});
+        let live = serde_json::json!({"z_field": 99, "a_field": 88, "m_field": 3});
+        let diff = diff_refresh(
+            "urn:pulumi:dev::proj::pkg:mod:Res::name",
+            &stored,
+            Some(&live),
+        );
+        assert_eq!(diff.action, RefreshAction::Updated);
+        assert_eq!(diff.changed_keys, vec!["a_field", "z_field"]);
     }
 }

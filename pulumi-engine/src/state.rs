@@ -34,6 +34,10 @@ pub struct ResourceState {
     /// Property names that contain secret values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_properties: Vec<String>,
+    /// Whether this resource should be refreshed before every update.
+    /// Set by a provider's `Read` response.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refresh_before_update: bool,
 }
 
 impl std::fmt::Debug for ResourceState {
@@ -462,6 +466,7 @@ mod tests {
                 }),
                 dependencies: vec![],
                 secret_properties: vec!["password".into(), "connectionString".into()],
+                refresh_before_update: false,
             }],
             outputs: serde_json::json!({
                 "url": "https://example.com",
@@ -626,6 +631,7 @@ mod tests {
             }),
             dependencies: vec![],
             secret_properties: vec!["password".into(), "connectionString".into()],
+            refresh_before_update: false,
         };
 
         let debug_output = format!("{state:?}");

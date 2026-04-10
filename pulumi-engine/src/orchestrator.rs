@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tonic::transport::Server;
 
+use crate::diff::{RefreshDiff, diff_refresh};
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
 use crate::monitor_service::ResourceMonitorImpl;
@@ -91,6 +92,8 @@ pub struct RefreshResult {
     pub stdout: String,
     /// Any warnings or errors.
     pub stderr: String,
+    /// Per-resource drift information.
+    pub diffs: Vec<RefreshDiff>,
 }
 
 /// The Rust-native Pulumi engine, parameterized over a [`Provider`] implementation.
@@ -266,6 +269,7 @@ impl<P: Provider> PulumiEngine<P> {
             }
             Some(mut cp) => {
                 let mut updated_resources = Vec::new();
+                let mut diffs = Vec::new();
 
                 for res in &cp.resources {
                     eprintln!("[engine] refresh: {} ({})", res.urn, res.resource_type);
@@ -287,16 +291,35 @@ impl<P: Provider> PulumiEngine<P> {
                                         .await;
 
                                     match read_result {
+                                        Ok(resp) if resp.id.is_empty() => {
+                                            // Provider returned empty ID — resource
+                                            // was deleted out-of-band. Remove from state.
+                                            eprintln!(
+                                                "[engine] refresh: {} deleted upstream",
+                                                res.urn
+                                            );
+                                            diffs.push(diff_refresh(
+                                                &res.urn,
+                                                &res.outputs,
+                                                None,
+                                            ));
+                                        }
                                         Ok(resp) => {
+                                            let live_outputs = resp
+                                                .properties
+                                                .as_ref()
+                                                .map(crate::monitor_service::proto_struct_to_json);
+
+                                            diffs.push(diff_refresh(
+                                                &res.urn,
+                                                &res.outputs,
+                                                live_outputs.as_ref(),
+                                            ));
+
                                             let mut refreshed = res.clone();
-                                            if !resp.id.is_empty() {
-                                                refreshed.id = resp.id;
-                                            }
-                                            if let Some(props) = resp.properties {
-                                                refreshed.outputs =
-                                                    crate::monitor_service::proto_struct_to_json(
-                                                        &props,
-                                                    );
+                                            refreshed.id = resp.id;
+                                            if let Some(outputs) = live_outputs {
+                                                refreshed.outputs = outputs;
                                             }
                                             if let Some(inputs) = resp.inputs {
                                                 refreshed.inputs =
@@ -304,6 +327,8 @@ impl<P: Provider> PulumiEngine<P> {
                                                         &inputs,
                                                     );
                                             }
+                                            refreshed.refresh_before_update =
+                                                resp.refresh_before_update;
                                             updated_resources.push(refreshed);
                                         }
                                         Err(e) => {
@@ -333,17 +358,22 @@ impl<P: Provider> PulumiEngine<P> {
 
                 self.providers.shutdown_all().await;
 
-                let resource_count = updated_resources.len();
                 cp.resources = updated_resources;
                 self.save_checkpoint(&cp, &checkpoint_path).await?;
 
-                summary.push_str(&format!("Refreshed {resource_count} resource(s).\n"));
+                summary = format_refresh_summary(&diffs);
+                return Ok(RefreshResult {
+                    stdout: summary,
+                    stderr: String::new(),
+                    diffs,
+                });
             }
         }
 
         Ok(RefreshResult {
             stdout: summary,
             stderr: String::new(),
+            diffs: vec![],
         })
     }
 
@@ -510,5 +540,161 @@ impl<P: Provider> PulumiEngine<P> {
             stdout,
             stderr,
         })
+    }
+}
+
+/// Build a human-readable refresh summary from per-resource diffs.
+fn format_refresh_summary(diffs: &[RefreshDiff]) -> String {
+    use crate::diff::RefreshAction;
+
+    if diffs.is_empty() {
+        return String::new();
+    }
+
+    let mut same = 0u32;
+    let mut updated = 0u32;
+    let mut deleted = 0u32;
+    let mut lines = Vec::new();
+
+    for d in diffs {
+        match d.action {
+            RefreshAction::Same => same += 1,
+            RefreshAction::Updated => {
+                updated += 1;
+                if d.changed_keys.is_empty() {
+                    lines.push(format!("  ~ {} — outputs changed", d.urn));
+                } else {
+                    lines.push(format!(
+                        "  ~ {} — outputs changed: [{}]",
+                        d.urn,
+                        d.changed_keys.join(", "),
+                    ));
+                }
+            }
+            RefreshAction::Deleted => {
+                deleted += 1;
+                lines.push(format!("  - {} — deleted upstream", d.urn));
+            }
+        }
+    }
+
+    let total = same + updated + deleted;
+    let mut summary = format!("Refreshed {total} resource(s):");
+    if same > 0 {
+        summary.push_str(&format!(" {same} unchanged"));
+    }
+    if updated > 0 {
+        if same > 0 {
+            summary.push(',');
+        }
+        summary.push_str(&format!(" {updated} updated"));
+    }
+    if deleted > 0 {
+        if same > 0 || updated > 0 {
+            summary.push(',');
+        }
+        summary.push_str(&format!(" {deleted} deleted"));
+    }
+    summary.push('\n');
+
+    for line in &lines {
+        summary.push_str(line);
+        summary.push('\n');
+    }
+
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::{RefreshAction, RefreshDiff};
+
+    #[test]
+    fn test_format_summary_empty() {
+        assert_eq!(format_refresh_summary(&[]), "");
+    }
+
+    #[test]
+    fn test_format_summary_all_same() {
+        let diffs = vec![
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:A::a".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:B::b".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+        ];
+        let summary = format_refresh_summary(&diffs);
+        assert_eq!(summary, "Refreshed 2 resource(s): 2 unchanged\n");
+    }
+
+    #[test]
+    fn test_format_summary_updated_with_keys() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::aws:s3:Bucket::b".into(),
+            action: RefreshAction::Updated,
+            changed_keys: vec!["tags".into(), "versioning".into()],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 1 resource(s): 1 updated\n"));
+        assert!(summary.contains("~ urn:pulumi:dev::proj::aws:s3:Bucket::b"));
+        assert!(summary.contains("[tags, versioning]"));
+    }
+
+    #[test]
+    fn test_format_summary_updated_no_keys() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::pkg:mod:R::r".into(),
+            action: RefreshAction::Updated,
+            changed_keys: vec![],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.contains("outputs changed\n"));
+        assert!(!summary.contains('['));
+    }
+
+    #[test]
+    fn test_format_summary_deleted() {
+        let diffs = vec![RefreshDiff {
+            urn: "urn:pulumi:dev::proj::aws:ec2:Instance::gone".into(),
+            action: RefreshAction::Deleted,
+            changed_keys: vec![],
+        }];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 1 resource(s): 1 deleted\n"));
+        assert!(summary.contains("- urn:pulumi:dev::proj::aws:ec2:Instance::gone"));
+        assert!(summary.contains("deleted upstream"));
+    }
+
+    #[test]
+    fn test_format_summary_mixed() {
+        let diffs = vec![
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:A::a".into(),
+                action: RefreshAction::Same,
+                changed_keys: vec![],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:B::b".into(),
+                action: RefreshAction::Updated,
+                changed_keys: vec!["size".into()],
+            },
+            RefreshDiff {
+                urn: "urn:pulumi:dev::proj::pkg:mod:C::c".into(),
+                action: RefreshAction::Deleted,
+                changed_keys: vec![],
+            },
+        ];
+        let summary = format_refresh_summary(&diffs);
+        assert!(summary.starts_with("Refreshed 3 resource(s): 1 unchanged, 1 updated, 1 deleted\n"));
+        // Only updated and deleted resources get detail lines.
+        assert!(summary.contains("~ urn:pulumi:dev::proj::pkg:mod:B::b"));
+        assert!(summary.contains("- urn:pulumi:dev::proj::pkg:mod:C::c"));
+        assert!(!summary.contains("pkg:mod:A::a"));
     }
 }
