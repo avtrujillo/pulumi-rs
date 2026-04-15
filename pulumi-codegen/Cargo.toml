@@ -1,0 +1,18 @@
+[package]
+name = "pulumi-codegen"
+version = "0.1.0"
+edition = "2024"
+description = "Code generator: reads Pulumi provider schema JSON, emits typed Rust crates"
+license = "Apache-2.0"
+
+[lib]
+doctest = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -997,6 +997,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulumi-codegen"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "pulumi-core"
 version = "0.1.0"
 dependencies = [
