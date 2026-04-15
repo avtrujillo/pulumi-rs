@@ -1,3 +1,3 @@
 [workspace]
-members = ["pulumi-core", "pulumi-macros", "pulumi", "pulumi-automation", "pulumi-cli", "pulumi-engine"]
+members = ["pulumi-core", "pulumi-macros", "pulumi", "pulumi-automation", "pulumi-cli", "pulumi-engine", "pulumi-codegen"]
 resolver = "3"

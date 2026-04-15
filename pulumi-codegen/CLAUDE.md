@@ -7,16 +7,16 @@ crates with derive macros, serde attributes, and doc comments.
 
 ## Current Status
 
-**Stage 0 — Plan complete, no code written yet.**
+**Stages 1 & 2 complete.** Crate skeleton, schema parsing, and naming utilities implemented with 63 passing tests.
 
-Next step: Stage 1 (crate skeleton + schema parsing) + Stage 2 (naming utilities).
+Next step: Stage 3 (IR construction).
 
 ## Implementation Stages
 
 | Stage | Status | Description |
 |-------|--------|-------------|
-| 1 | NOT STARTED | Crate skeleton + schema JSON deserialization (`schema.rs`) |
-| 2 | NOT STARTED | Naming utilities: camelCase→snake_case, keyword escaping, token parsing (`naming.rs`) |
+| 1 | DONE | Crate skeleton + schema JSON deserialization (`schema.rs`) |
+| 2 | DONE | Naming utilities: camelCase→snake_case, keyword escaping, token parsing (`naming.rs`) |
 | 3 | NOT STARTED | IR construction: resolve `$ref`, map types to Rust, organize modules (`ir.rs`) |
 | 4 | NOT STARTED | Code emission: generate `.rs` files from IR (`emit.rs`) |
 | 5 | NOT STARTED | CLI binary (`main.rs`) with clap |
