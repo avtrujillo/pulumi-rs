@@ -799,4 +799,128 @@ mod tests {
         };
         assert_eq!(resolve_type_spec(&spec, None), "i64");
     }
+
+    // ---- Field resolution ----
+
+    fn make_prop(type_name: &str) -> PropertySpec {
+        PropertySpec {
+            type_: Some(type_name.to_string()),
+            ref_: None,
+            items: None,
+            additional_properties: None,
+            one_of: None,
+            description: None,
+            deprecation_message: None,
+            secret: false,
+            default_value: None,
+            plain: false,
+            replace_on_changes: false,
+            will_replace_on_changes: false,
+        }
+    }
+
+    #[test]
+    fn field_required_string() {
+        let prop = make_prop("string");
+        let field = resolve_field("bucketPrefix", &prop, true, None);
+        assert_eq!(field.original_name, "bucketPrefix");
+        assert_eq!(field.rust_name, "bucket_prefix");
+        assert_eq!(field.rust_type, "String");
+        assert!(field.required);
+    }
+
+    #[test]
+    fn field_optional_integer() {
+        let prop = make_prop("integer");
+        let field = resolve_field("count", &prop, false, None);
+        assert_eq!(field.rust_name, "count");
+        assert_eq!(field.rust_type, "Option<i64>");
+        assert!(!field.required);
+    }
+
+    #[test]
+    fn field_keyword_escape() {
+        let prop = make_prop("string");
+        let field = resolve_field("type", &prop, true, None);
+        assert_eq!(field.original_name, "type");
+        assert_eq!(field.rust_name, "r#type");
+        assert_eq!(field.rust_type, "String");
+    }
+
+    #[test]
+    fn field_self_keyword_escape() {
+        let prop = make_prop("boolean");
+        let field = resolve_field("self", &prop, false, None);
+        assert_eq!(field.original_name, "self");
+        assert_eq!(field.rust_name, "self_");
+        assert_eq!(field.rust_type, "Option<bool>");
+    }
+
+    #[test]
+    fn field_preserves_metadata() {
+        let prop = PropertySpec {
+            type_: Some("string".to_string()),
+            ref_: None,
+            items: None,
+            additional_properties: None,
+            one_of: None,
+            description: Some("A description".to_string()),
+            deprecation_message: Some("Use other field".to_string()),
+            secret: true,
+            default_value: None,
+            plain: false,
+            replace_on_changes: false,
+            will_replace_on_changes: false,
+        };
+        let field = resolve_field("myField", &prop, true, None);
+        assert_eq!(field.description.as_deref(), Some("A description"));
+        assert_eq!(field.deprecation.as_deref(), Some("Use other field"));
+        assert!(field.secret);
+    }
+
+    #[test]
+    fn field_optional_ref_type() {
+        let prop = PropertySpec {
+            type_: None,
+            ref_: Some("#/types/aws:s3/BucketCors:BucketCors".to_string()),
+            items: None,
+            additional_properties: None,
+            one_of: None,
+            description: None,
+            deprecation_message: None,
+            secret: false,
+            default_value: None,
+            plain: false,
+            replace_on_changes: false,
+            will_replace_on_changes: false,
+        };
+        let field = resolve_field("corsRules", &prop, false, None);
+        assert_eq!(field.rust_name, "cors_rules");
+        assert_eq!(field.rust_type, "Option<crate::types::s3::BucketCors>");
+    }
+
+    #[test]
+    fn resolve_fields_mixed_required() {
+        let mut properties = BTreeMap::new();
+        properties.insert("name".to_string(), make_prop("string"));
+        properties.insert("count".to_string(), make_prop("integer"));
+        properties.insert("enabled".to_string(), make_prop("boolean"));
+
+        let required = vec!["name".to_string()];
+        let fields = resolve_fields(&properties, &required, None);
+
+        assert_eq!(fields.len(), 3);
+        // BTreeMap iterates in alphabetical order: count, enabled, name
+        assert_eq!(fields[0].rust_name, "count");
+        assert_eq!(fields[0].rust_type, "Option<i64>");
+        assert!(!fields[0].required);
+
+        assert_eq!(fields[1].rust_name, "enabled");
+        assert_eq!(fields[1].rust_type, "Option<bool>");
+        assert!(!fields[1].required);
+
+        assert_eq!(fields[2].rust_name, "name");
+        assert_eq!(fields[2].rust_type, "String");
+        assert!(fields[2].required);
+    }
 }
