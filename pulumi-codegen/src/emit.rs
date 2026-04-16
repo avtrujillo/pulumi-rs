@@ -13,6 +13,21 @@ use crate::ir::{
     ResolvedResource, ResolvedType,
 };
 
+/// Options for code emission.
+pub struct EmitOptions {
+    /// If set, use a path dependency for the `pulumi` crate instead of a
+    /// version from crates.io. Useful for local development and validation.
+    pub pulumi_crate_path: Option<String>,
+}
+
+impl Default for EmitOptions {
+    fn default() -> Self {
+        Self {
+            pulumi_crate_path: None,
+        }
+    }
+}
+
 /// Generate a complete Rust crate from a [`ResolvedPackage`] and write it to `out_dir`.
 ///
 /// Creates the directory structure:
@@ -33,11 +48,20 @@ use crate::ir::{
 ///             └── {type}.rs
 /// ```
 pub fn emit_package(package: &ResolvedPackage, out_dir: &Path) -> std::io::Result<()> {
+    emit_package_with_options(package, out_dir, &EmitOptions::default())
+}
+
+/// Generate a complete Rust crate with custom options.
+pub fn emit_package_with_options(
+    package: &ResolvedPackage,
+    out_dir: &Path,
+    options: &EmitOptions,
+) -> std::io::Result<()> {
     let src_dir = out_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
     // Cargo.toml
-    std::fs::write(out_dir.join("Cargo.toml"), emit_cargo_toml(package))?;
+    std::fs::write(out_dir.join("Cargo.toml"), emit_cargo_toml(package, options))?;
 
     // Collect all file entries for lib.rs generation.
     let root_module = package.modules.get("");
@@ -144,7 +168,29 @@ pub fn emit_package(package: &ResolvedPackage, out_dir: &Path) -> std::io::Resul
 // Cargo.toml
 // ---------------------------------------------------------------------------
 
-fn emit_cargo_toml(package: &ResolvedPackage) -> String {
+fn emit_cargo_toml(package: &ResolvedPackage, options: &EmitOptions) -> String {
+    let (pulumi_dep, pulumi_core_dep) = match &options.pulumi_crate_path {
+        Some(path) => {
+            // Derive the pulumi-core path from the pulumi crate path
+            // (assumes sibling directory layout: ../pulumi-core relative to ../pulumi).
+            let pulumi_path = std::path::Path::new(path);
+            let core_path = pulumi_path
+                .parent()
+                .map(|p| p.join("pulumi-core"))
+                .unwrap_or_else(|| std::path::PathBuf::from("../pulumi-core"));
+            (
+                format!("pulumi = {{ path = \"{path}\", features = [\"macros\"] }}"),
+                format!(
+                    "pulumi-core = {{ path = \"{}\" }}",
+                    core_path.display()
+                ),
+            )
+        }
+        None => (
+            "pulumi = { version = \"0.1\", features = [\"macros\"] }".to_string(),
+            "pulumi-core = { version = \"0.1\" }".to_string(),
+        ),
+    };
     format!(
         r#"[package]
 name = "pulumi-{name}"
@@ -157,7 +203,8 @@ license = "Apache-2.0"
 doctest = false
 
 [dependencies]
-pulumi = {{ version = "0.1", features = ["macros"] }}
+{pulumi_dep}
+{pulumi_core_dep}
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -474,7 +521,7 @@ mod tests {
             modules: BTreeMap::new(),
             types: BTreeMap::new(),
         };
-        let toml = emit_cargo_toml(&package);
+        let toml = emit_cargo_toml(&package, &EmitOptions::default());
         assert!(toml.contains("name = \"pulumi-random\""));
         assert!(toml.contains("version = \"4.16.0\""));
         assert!(toml.contains("pulumi = {"));

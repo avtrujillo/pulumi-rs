@@ -22,6 +22,10 @@ struct Cli {
     /// Run rustfmt on the generated code.
     #[arg(long)]
     format: bool,
+
+    /// Use a local path dependency for the `pulumi` crate instead of crates.io.
+    #[arg(long)]
+    pulumi_crate_path: Option<String>,
 }
 
 fn main() {
@@ -44,7 +48,11 @@ fn main() {
         package.version = version;
     }
 
-    pulumi_codegen::emit::emit_package(&package, &cli.out).unwrap_or_else(|e| {
+    let options = pulumi_codegen::emit::EmitOptions {
+        pulumi_crate_path: cli.pulumi_crate_path,
+    };
+
+    pulumi_codegen::emit::emit_package_with_options(&package, &cli.out, &options).unwrap_or_else(|e| {
         eprintln!("Error writing generated crate to {:?}: {e}", cli.out);
         std::process::exit(1);
     });

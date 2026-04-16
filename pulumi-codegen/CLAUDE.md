@@ -7,9 +7,7 @@ crates with derive macros, serde attributes, and doc comments.
 
 ## Current Status
 
-**Stages 1–5 complete.** Full pipeline from schema JSON to generated Rust crate with 123 passing tests + working CLI.
-
-Next step: Stage 6 (validation against real provider schemas).
+**All 6 stages complete.** Full pipeline from schema JSON to generated Rust crate with 123 passing tests + working CLI. Generated `pulumi-random` crate passes `cargo check`.
 
 ## Implementation Stages
 
@@ -20,7 +18,7 @@ Next step: Stage 6 (validation against real provider schemas).
 | 3 | DONE | IR construction: resolve `$ref`, map types to Rust, organize modules (`ir.rs`) |
 | 4 | DONE | Code emission: generate `.rs` files from IR (`emit.rs`) |
 | 5 | DONE | CLI binary (`main.rs`) with clap |
-| 6 | NOT STARTED | Validation against real provider schemas (random, docker) |
+| 6 | DONE | Validation against real provider schemas (random, docker) |
 
 Update this table as stages are completed.
 
