@@ -7,9 +7,9 @@ crates with derive macros, serde attributes, and doc comments.
 
 ## Current Status
 
-**Stages 1 & 2 complete.** Crate skeleton, schema parsing, and naming utilities implemented with 63 passing tests.
+**Stages 1–4 complete.** Full pipeline from schema JSON to generated Rust crate with 123 passing tests.
 
-Next step: Stage 3 (IR construction).
+Next step: Stage 5 (CLI binary).
 
 ## Implementation Stages
 
@@ -17,8 +17,8 @@ Next step: Stage 3 (IR construction).
 |-------|--------|-------------|
 | 1 | DONE | Crate skeleton + schema JSON deserialization (`schema.rs`) |
 | 2 | DONE | Naming utilities: camelCase→snake_case, keyword escaping, token parsing (`naming.rs`) |
-| 3 | NOT STARTED | IR construction: resolve `$ref`, map types to Rust, organize modules (`ir.rs`) |
-| 4 | NOT STARTED | Code emission: generate `.rs` files from IR (`emit.rs`) |
+| 3 | DONE | IR construction: resolve `$ref`, map types to Rust, organize modules (`ir.rs`) |
+| 4 | DONE | Code emission: generate `.rs` files from IR (`emit.rs`) |
 | 5 | NOT STARTED | CLI binary (`main.rs`) with clap |
 | 6 | NOT STARTED | Validation against real provider schemas (random, docker) |
 
