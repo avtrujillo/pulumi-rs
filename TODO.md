@@ -9,7 +9,7 @@
 | 3 | Transforms | `pulumi-engine` | Medium | Hard | `register_stack_transform` is accepted but silently ignored today; must intercept resource registrations in the orchestrator, apply user-supplied transforms, and handle ordering/conflicts |
 | 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
 | 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
-| 6 | Code generation | new crate | XL | Very Hard | Greenfield crate: parse provider JSON schemas, map Pulumi types to Rust, generate structs/enums/derives, handle naming collisions and keyword escaping; largest item on the roadmap |
+| 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Remaining: union types, asset/archive types, larger provider validation. See `pulumi-codegen/TODO.md`. |
 | 7 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
 | 8 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
 
