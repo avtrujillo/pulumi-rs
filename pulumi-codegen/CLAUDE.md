@@ -22,6 +22,13 @@ crates with derive macros, serde attributes, and doc comments.
 
 Update this table as stages are completed.
 
+## Future Work
+
+- [ ] **Proper union types** — `oneOf` currently emits `serde_json::Value`; generate proper Rust enums instead
+- [ ] **Asset/Archive types** — currently `serde_json::Value`; use dedicated SDK types once `pulumi-core` adds them
+- [ ] **Validate against larger providers** — only tested with `pulumi-random`; test with docker, AWS, and other providers that exercise deeply nested modules, complex type references, and edge cases
+- [ ] **Publish `pulumi` to crates.io** — generated crates default to `pulumi = "0.1"` which doesn't exist yet; the `--pulumi-crate-path` flag works around this for local dev
+
 ## Session Protocol
 
 At the start of each session working on this crate:
