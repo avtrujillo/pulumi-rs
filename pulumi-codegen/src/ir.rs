@@ -923,4 +923,325 @@ mod tests {
         assert_eq!(fields[2].rust_type, "String");
         assert!(fields[2].required);
     }
+
+    // ---- Resource resolution ----
+
+    #[test]
+    fn resource_basic() {
+        let mut input_properties = BTreeMap::new();
+        input_properties.insert("name".to_string(), make_prop("string"));
+        input_properties.insert("count".to_string(), make_prop("integer"));
+
+        let mut properties = BTreeMap::new();
+        properties.insert("id".to_string(), make_prop("string"));
+        properties.insert("name".to_string(), make_prop("string"));
+
+        let spec = ResourceSpec {
+            description: Some("A test resource".to_string()),
+            input_properties,
+            properties,
+            required_inputs: vec!["name".to_string()],
+            required: vec!["id".to_string(), "name".to_string()],
+            deprecation_message: None,
+            is_component: false,
+            is_overlay: false,
+            methods: BTreeMap::new(),
+            state_inputs: None,
+            aliases: vec![],
+        };
+
+        let res = resolve_resource("test:index/myResource:MyResource", &spec, None).unwrap();
+        assert_eq!(res.type_token, "test:index/myResource:MyResource");
+        assert_eq!(res.rust_name, "MyResource");
+        assert_eq!(res.file_name, "my_resource");
+        assert_eq!(res.description.as_deref(), Some("A test resource"));
+        assert!(!res.is_component);
+
+        // Input fields
+        assert_eq!(res.input_fields.len(), 2);
+        let count_field = res.input_fields.iter().find(|f| f.rust_name == "count").unwrap();
+        assert_eq!(count_field.rust_type, "Option<i64>");
+        let name_input = res.input_fields.iter().find(|f| f.rust_name == "name").unwrap();
+        assert_eq!(name_input.rust_type, "String");
+        assert!(name_input.required);
+
+        // Output fields
+        assert_eq!(res.output_fields.len(), 2);
+        let id_field = res.output_fields.iter().find(|f| f.rust_name == "id").unwrap();
+        assert_eq!(id_field.rust_type, "String");
+        assert!(id_field.required);
+    }
+
+    #[test]
+    fn resource_overlay_skipped() {
+        let spec = ResourceSpec {
+            description: None,
+            input_properties: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            required_inputs: vec![],
+            required: vec![],
+            deprecation_message: None,
+            is_component: false,
+            is_overlay: true,
+            methods: BTreeMap::new(),
+            state_inputs: None,
+            aliases: vec![],
+        };
+        assert!(resolve_resource("test:index/overlay:Overlay", &spec, None).is_none());
+    }
+
+    #[test]
+    fn resource_component() {
+        let spec = ResourceSpec {
+            description: None,
+            input_properties: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            required_inputs: vec![],
+            required: vec![],
+            deprecation_message: None,
+            is_component: true,
+            is_overlay: false,
+            methods: BTreeMap::new(),
+            state_inputs: None,
+            aliases: vec![],
+        };
+        let res = resolve_resource("test:index/comp:MyComponent", &spec, None).unwrap();
+        assert!(res.is_component);
+        assert_eq!(res.rust_name, "MyComponent");
+    }
+
+    #[test]
+    fn resource_deprecated() {
+        let spec = ResourceSpec {
+            description: None,
+            input_properties: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            required_inputs: vec![],
+            required: vec![],
+            deprecation_message: Some("Use NewResource instead".to_string()),
+            is_component: false,
+            is_overlay: false,
+            methods: BTreeMap::new(),
+            state_inputs: None,
+            aliases: vec![],
+        };
+        let res = resolve_resource("test:index/old:OldResource", &spec, None).unwrap();
+        assert_eq!(res.deprecation.as_deref(), Some("Use NewResource instead"));
+    }
+
+    // ---- Function resolution ----
+
+    #[test]
+    fn function_basic() {
+        let spec = FunctionSpec {
+            description: Some("Get a widget".to_string()),
+            inputs: Some(crate::schema::ObjectTypeSpec {
+                properties: {
+                    let mut m = BTreeMap::new();
+                    m.insert("id".to_string(), make_prop("string"));
+                    m
+                },
+                required: vec!["id".to_string()],
+                description: None,
+                type_: None,
+            }),
+            outputs: Some(crate::schema::ObjectTypeSpec {
+                properties: {
+                    let mut m = BTreeMap::new();
+                    m.insert("name".to_string(), make_prop("string"));
+                    m.insert("value".to_string(), make_prop("number"));
+                    m
+                },
+                required: vec!["name".to_string(), "value".to_string()],
+                description: None,
+                type_: None,
+            }),
+            deprecation_message: None,
+            is_overlay: false,
+            multi_argument_inputs: None,
+        };
+
+        let func = resolve_function("test:index/getWidget:getWidget", &spec, None).unwrap();
+        assert_eq!(func.rust_name, "GetWidget");
+        assert_eq!(func.file_name, "get_widget");
+        assert_eq!(func.description.as_deref(), Some("Get a widget"));
+
+        assert_eq!(func.arg_fields.len(), 1);
+        assert_eq!(func.arg_fields[0].rust_name, "id");
+        assert_eq!(func.arg_fields[0].rust_type, "String");
+
+        assert_eq!(func.result_fields.len(), 2);
+        let name_field = func.result_fields.iter().find(|f| f.rust_name == "name").unwrap();
+        assert_eq!(name_field.rust_type, "String");
+        let value_field = func.result_fields.iter().find(|f| f.rust_name == "value").unwrap();
+        assert_eq!(value_field.rust_type, "f64");
+    }
+
+    #[test]
+    fn function_no_inputs_or_outputs() {
+        let spec = FunctionSpec {
+            description: None,
+            inputs: None,
+            outputs: None,
+            deprecation_message: None,
+            is_overlay: false,
+            multi_argument_inputs: None,
+        };
+        let func = resolve_function("test:index/doThing:doThing", &spec, None).unwrap();
+        assert_eq!(func.rust_name, "DoThing");
+        assert!(func.arg_fields.is_empty());
+        assert!(func.result_fields.is_empty());
+    }
+
+    #[test]
+    fn function_overlay_skipped() {
+        let spec = FunctionSpec {
+            description: None,
+            inputs: None,
+            outputs: None,
+            deprecation_message: None,
+            is_overlay: true,
+            multi_argument_inputs: None,
+        };
+        assert!(resolve_function("test:index/overlay:overlay", &spec, None).is_none());
+    }
+
+    // ---- Complex type resolution ----
+
+    #[test]
+    fn complex_type_object() {
+        let spec = ComplexTypeSpec {
+            description: Some("A lifecycle rule".to_string()),
+            type_: Some("object".to_string()),
+            properties: {
+                let mut m = BTreeMap::new();
+                m.insert("enabled".to_string(), make_prop("boolean"));
+                m.insert("prefix".to_string(), make_prop("string"));
+                m
+            },
+            required: vec!["enabled".to_string()],
+            enum_values: None,
+            is_overlay: false,
+        };
+
+        let resolved = resolve_complex_type("aws:s3/BucketLifecycleRule:BucketLifecycleRule", &spec, None).unwrap();
+        match resolved {
+            ResolvedType::Object(obj) => {
+                assert_eq!(obj.rust_name, "BucketLifecycleRule");
+                assert_eq!(obj.module, "s3");
+                assert_eq!(obj.file_name, "bucket_lifecycle_rule");
+                assert_eq!(obj.fields.len(), 2);
+                let enabled = obj.fields.iter().find(|f| f.rust_name == "enabled").unwrap();
+                assert_eq!(enabled.rust_type, "bool");
+                assert!(enabled.required);
+                let prefix = obj.fields.iter().find(|f| f.rust_name == "prefix").unwrap();
+                assert_eq!(prefix.rust_type, "Option<String>");
+            }
+            ResolvedType::Enum(_) => panic!("Expected object, got enum"),
+        }
+    }
+
+    #[test]
+    fn complex_type_enum_string() {
+        let spec = ComplexTypeSpec {
+            description: Some("Canned ACL".to_string()),
+            type_: Some("string".to_string()),
+            properties: BTreeMap::new(),
+            required: vec![],
+            enum_values: Some(vec![
+                crate::schema::EnumValueSpec {
+                    name: Some("Private".to_string()),
+                    value: serde_json::Value::String("private".to_string()),
+                    description: Some("Private access".to_string()),
+                    deprecation_message: None,
+                },
+                crate::schema::EnumValueSpec {
+                    name: Some("PublicRead".to_string()),
+                    value: serde_json::Value::String("public-read".to_string()),
+                    description: None,
+                    deprecation_message: None,
+                },
+                crate::schema::EnumValueSpec {
+                    name: None,
+                    value: serde_json::Value::String("public-read-write".to_string()),
+                    description: None,
+                    deprecation_message: None,
+                },
+            ]),
+            is_overlay: false,
+        };
+
+        let resolved = resolve_complex_type("aws:s3/CannedAcl:CannedAcl", &spec, None).unwrap();
+        match resolved {
+            ResolvedType::Enum(e) => {
+                assert_eq!(e.rust_name, "CannedAcl");
+                assert_eq!(e.module, "s3");
+                assert_eq!(e.underlying_type, "String");
+                assert_eq!(e.variants.len(), 3);
+
+                assert_eq!(e.variants[0].rust_name, "Private");
+                assert_eq!(e.variants[0].value, "private");
+                assert_eq!(e.variants[0].description.as_deref(), Some("Private access"));
+
+                assert_eq!(e.variants[1].rust_name, "PublicRead");
+                assert_eq!(e.variants[1].value, "public-read");
+
+                // Unnamed variant — derived from value via to_pascal_case
+                assert_eq!(e.variants[2].rust_name, "PublicReadWrite");
+                assert_eq!(e.variants[2].value, "public-read-write");
+            }
+            ResolvedType::Object(_) => panic!("Expected enum, got object"),
+        }
+    }
+
+    #[test]
+    fn complex_type_enum_integer() {
+        let spec = ComplexTypeSpec {
+            description: None,
+            type_: Some("integer".to_string()),
+            properties: BTreeMap::new(),
+            required: vec![],
+            enum_values: Some(vec![
+                crate::schema::EnumValueSpec {
+                    name: Some("Small".to_string()),
+                    value: serde_json::json!(1),
+                    description: None,
+                    deprecation_message: None,
+                },
+                crate::schema::EnumValueSpec {
+                    name: None,
+                    value: serde_json::json!(99),
+                    description: None,
+                    deprecation_message: None,
+                },
+            ]),
+            is_overlay: false,
+        };
+
+        let resolved = resolve_complex_type("test:index/Size:Size", &spec, None).unwrap();
+        match resolved {
+            ResolvedType::Enum(e) => {
+                assert_eq!(e.underlying_type, "i64");
+                assert_eq!(e.module, "");
+                assert_eq!(e.variants[0].rust_name, "Small");
+                assert_eq!(e.variants[0].value, "1");
+                assert_eq!(e.variants[1].rust_name, "V99");
+                assert_eq!(e.variants[1].value, "99");
+            }
+            ResolvedType::Object(_) => panic!("Expected enum, got object"),
+        }
+    }
+
+    #[test]
+    fn complex_type_overlay_skipped() {
+        let spec = ComplexTypeSpec {
+            description: None,
+            type_: Some("object".to_string()),
+            properties: BTreeMap::new(),
+            required: vec![],
+            enum_values: None,
+            is_overlay: true,
+        };
+        assert!(resolve_complex_type("test:index/overlay:Overlay", &spec, None).is_none());
+    }
 }
