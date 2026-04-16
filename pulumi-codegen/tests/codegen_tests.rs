@@ -1,3 +1,4 @@
+use pulumi_codegen::emit::emit_package;
 use pulumi_codegen::ir::{resolve_package, ResolvedType};
 use pulumi_codegen::naming::{
     camel_to_snake_case, escape_rust_keyword, module_to_rust_identifier, parse_type_token,
@@ -451,4 +452,177 @@ fn synthetic_schema_with_types_and_functions() {
         }
         ResolvedType::Object(_) => panic!("Expected enum"),
     }
+}
+
+// ---- End-to-end: emit pulumi-random crate and verify file structure ----
+
+#[test]
+fn emit_random_crate_file_structure() {
+    let schema = load_random_schema();
+    let package = resolve_package(&schema);
+    let dir = tempfile::tempdir().unwrap();
+
+    emit_package(&package, dir.path()).unwrap();
+
+    // Cargo.toml
+    let cargo = std::fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
+    assert!(cargo.contains("name = \"pulumi-random\""));
+    assert!(cargo.contains("pulumi = {"));
+
+    // src/lib.rs should have mod + pub use for each resource
+    let lib = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(lib.contains("mod random_id;"));
+    assert!(lib.contains("pub use random_id::*;"));
+    assert!(lib.contains("mod random_string;"));
+    assert!(lib.contains("pub use random_string::*;"));
+    assert!(lib.contains("mod random_bytes;"));
+
+    // Each resource file should exist and contain expected code
+    let resource_files = [
+        "random_bytes", "random_id", "random_integer", "random_password",
+        "random_pet", "random_shuffle", "random_string", "random_uuid",
+        "random_uuid4", "random_uuid7",
+    ];
+    for name in &resource_files {
+        let path = dir.path().join(format!("src/{name}.rs"));
+        assert!(path.exists(), "Missing resource file: {name}.rs");
+    }
+
+    // Spot-check random_id.rs content
+    let random_id = std::fs::read_to_string(dir.path().join("src/random_id.rs")).unwrap();
+    assert!(random_id.contains("pub struct RandomIdArgs {"));
+    assert!(random_id.contains("pub struct RandomIdOutputs {"));
+    assert!(random_id.contains("#[derive(pulumi::Resource)]"));
+    assert!(random_id.contains("#[pulumi(type_token = \"random:index/randomId:RandomId\")]"));
+    assert!(random_id.contains("#[pulumi(inputs = RandomIdArgs)]"));
+    assert!(random_id.contains("#[pulumi(outputs = RandomIdOutputs)]"));
+    assert!(random_id.contains("pub struct RandomId;"));
+
+    // Check field attributes in RandomIdArgs
+    assert!(random_id.contains("#[serde(rename = \"byteLength\")]"));
+    assert!(random_id.contains("pub byte_length: i64,"));
+    assert!(random_id.contains(
+        "#[serde(rename = \"keepers\", skip_serializing_if = \"Option::is_none\")]"
+    ));
+    assert!(random_id.contains(
+        "pub keepers: Option<std::collections::HashMap<String, String>>,"
+    ));
+
+    // Check outputs don't have skip_serializing_if
+    assert!(random_id.contains("pub struct RandomIdOutputs {"));
+    // b64Std is a required output — should just have rename, no skip_serializing_if
+    assert!(random_id.contains("#[serde(rename = \"b64Std\")]"));
+    assert!(random_id.contains("pub b64_std: String,"));
+}
+
+#[test]
+fn emit_synthetic_crate_with_modules_and_types() {
+    let json = r##"{
+        "name": "mycloud",
+        "version": "1.0.0",
+        "meta": { "moduleFormat": "(.*)(?:/[^/]*)" },
+        "resources": {
+            "mycloud:storage/bucket:Bucket": {
+                "inputProperties": {
+                    "name": { "type": "string" },
+                    "acl": { "$ref": "#/types/mycloud:storage/CannedAcl:CannedAcl" }
+                },
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "requiredInputs": ["name"],
+                "required": ["id"]
+            }
+        },
+        "functions": {
+            "mycloud:storage/getBucket:getBucket": {
+                "inputs": {
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"]
+                },
+                "outputs": {
+                    "properties": { "id": { "type": "string" } },
+                    "required": ["id"]
+                }
+            }
+        },
+        "types": {
+            "mycloud:storage/BucketRule:BucketRule": {
+                "type": "object",
+                "properties": {
+                    "enabled": { "type": "boolean" }
+                },
+                "required": ["enabled"]
+            },
+            "mycloud:storage/CannedAcl:CannedAcl": {
+                "type": "string",
+                "enum": [
+                    { "name": "Private", "value": "private" },
+                    { "name": "PublicRead", "value": "public-read" }
+                ]
+            }
+        }
+    }"##;
+
+    let schema: PackageSchema = serde_json::from_str(json).unwrap();
+    let package = resolve_package(&schema);
+    let dir = tempfile::tempdir().unwrap();
+
+    emit_package(&package, dir.path()).unwrap();
+
+    // Module directory structure
+    assert!(dir.path().join("src/storage/mod.rs").exists());
+    assert!(dir.path().join("src/storage/bucket.rs").exists());
+    assert!(dir.path().join("src/storage/get_bucket.rs").exists());
+
+    // Types directory structure
+    assert!(dir.path().join("src/types/mod.rs").exists());
+    assert!(dir.path().join("src/types/storage/mod.rs").exists());
+    assert!(dir.path().join("src/types/storage/bucket_rule.rs").exists());
+    assert!(dir.path().join("src/types/storage/canned_acl.rs").exists());
+
+    // lib.rs should declare the storage module and types module
+    let lib = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(lib.contains("pub mod types;"));
+    assert!(lib.contains("pub mod storage;"));
+
+    // storage/mod.rs should declare bucket and get_bucket
+    let storage_mod = std::fs::read_to_string(dir.path().join("src/storage/mod.rs")).unwrap();
+    assert!(storage_mod.contains("mod bucket;"));
+    assert!(storage_mod.contains("pub use bucket::*;"));
+    assert!(storage_mod.contains("mod get_bucket;"));
+    assert!(storage_mod.contains("pub use get_bucket::*;"));
+
+    // types/mod.rs should declare storage submodule
+    let types_mod = std::fs::read_to_string(dir.path().join("src/types/mod.rs")).unwrap();
+    assert!(types_mod.contains("pub mod storage;"));
+
+    // types/storage/mod.rs should declare the types
+    let types_storage = std::fs::read_to_string(dir.path().join("src/types/storage/mod.rs")).unwrap();
+    assert!(types_storage.contains("mod bucket_rule;"));
+    assert!(types_storage.contains("pub use bucket_rule::*;"));
+    assert!(types_storage.contains("mod canned_acl;"));
+    assert!(types_storage.contains("pub use canned_acl::*;"));
+
+    // Object type file
+    let rule = std::fs::read_to_string(dir.path().join("src/types/storage/bucket_rule.rs")).unwrap();
+    assert!(rule.contains("#[derive(Serialize, Deserialize, Clone)]"));
+    assert!(rule.contains("pub struct BucketRule {"));
+    assert!(rule.contains("pub enabled: bool,"));
+
+    // Enum type file
+    let acl = std::fs::read_to_string(dir.path().join("src/types/storage/canned_acl.rs")).unwrap();
+    assert!(acl.contains("#[derive(Serialize, Deserialize, Clone, PartialEq)]"));
+    assert!(acl.contains("pub enum CannedAcl {"));
+    assert!(acl.contains("#[serde(rename = \"private\")]"));
+    assert!(acl.contains("    Private,"));
+    assert!(acl.contains("#[serde(rename = \"public-read\")]"));
+    assert!(acl.contains("    PublicRead,"));
+
+    // Function file
+    let get_bucket = std::fs::read_to_string(dir.path().join("src/storage/get_bucket.rs")).unwrap();
+    assert!(get_bucket.contains("pub struct GetBucketArgs {"));
+    assert!(get_bucket.contains("pub struct GetBucketResult {"));
+    assert!(get_bucket.contains("#[derive(pulumi::ProviderFunction)]"));
+    assert!(get_bucket.contains("pub struct GetBucket;"));
 }

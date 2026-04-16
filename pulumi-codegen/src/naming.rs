@@ -84,7 +84,7 @@ pub fn to_pascal_case(s: &str) -> String {
     let mut capitalize_next = true;
 
     for c in s.chars() {
-        if c == '_' || c == '-' || c == '.' {
+        if c == '_' || c == '-' || c == '.' || c == '/' {
             capitalize_next = true;
         } else if capitalize_next {
             result.push(c.to_ascii_uppercase());
@@ -205,8 +205,12 @@ pub fn module_to_rust_identifier(module: &str) -> String {
 }
 
 /// Convert a type name to a file name (snake_case, no extension).
+///
+/// Replaces `/` with `_` before converting, since some provider method
+/// tokens have names like `random/terraformConfig`.
 pub fn type_name_to_file_name(name: &str) -> String {
-    camel_to_snake_case(name)
+    let sanitized = name.replace('/', "_");
+    camel_to_snake_case(&sanitized)
 }
 
 #[cfg(test)]
