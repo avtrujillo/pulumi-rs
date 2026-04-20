@@ -1030,6 +1030,7 @@ dependencies = [
  "base64",
  "hmac",
  "pbkdf2",
+ "prost",
  "prost-types",
  "pulumi-core",
  "rand",

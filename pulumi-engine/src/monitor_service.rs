@@ -9,12 +9,25 @@ use crate::provider::{self, Provider, ProviderManager};
 use crate::pulumirpc;
 use crate::secrets::is_json_secret;
 use crate::state::{EngineState, ResourceState};
+use prost::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 pub struct ResourceMonitorImpl<P: Provider> {
     state: EngineState,
     dry_run: bool,
     providers: ProviderManager<P>,
+    transforms: Arc<Mutex<Vec<pulumirpc::Callback>>>,
+    callback_clients: Arc<
+        Mutex<
+            HashMap<
+                String,
+                pulumirpc::callbacks_client::CallbacksClient<tonic::transport::Channel>,
+            >,
+        >,
+    >,
 }
 
 impl<P: Provider> ResourceMonitorImpl<P> {
@@ -23,7 +36,76 @@ impl<P: Provider> ResourceMonitorImpl<P> {
             state,
             dry_run,
             providers,
+            transforms: Arc::new(Mutex::new(Vec::new())),
+            callback_clients: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Invoke all registered stack transforms against the given resource registration,
+    /// returning the (possibly modified) object, ignore_changes, and additional_secret_outputs.
+    async fn apply_transforms(
+        &self,
+        resource_type: &str,
+        name: &str,
+        custom: bool,
+        parent: &str,
+        mut object: Option<prost_types::Struct>,
+        mut ignore_changes: Vec<String>,
+        mut additional_secret_outputs: Vec<String>,
+    ) -> Result<(Option<prost_types::Struct>, Vec<String>, Vec<String>), Status> {
+        let transforms = self.transforms.lock().await.clone();
+        for callback in transforms {
+            let transform_req = pulumirpc::TransformRequest {
+                r#type: resource_type.to_string(),
+                name: name.to_string(),
+                custom,
+                parent: parent.to_string(),
+                properties: object.clone(),
+                options: Some(pulumirpc::TransformResourceOptions {
+                    ignore_changes: ignore_changes.clone(),
+                    additional_secret_outputs: additional_secret_outputs.clone(),
+                    ..Default::default()
+                }),
+            };
+
+            let req_bytes = transform_req.encode_to_vec();
+
+            let mut client = {
+                let mut clients = self.callback_clients.lock().await;
+                if let Some(existing) = clients.get(&callback.target) {
+                    existing.clone()
+                } else {
+                    let endpoint =
+                        tonic::transport::Channel::from_shared(format!("http://{}", callback.target))
+                            .map_err(|e| {
+                                Status::internal(format!("invalid callback target: {e}"))
+                            })?;
+                    let channel = endpoint.connect_lazy();
+                    let client = pulumirpc::callbacks_client::CallbacksClient::new(channel);
+                    clients.insert(callback.target.clone(), client.clone());
+                    client
+                }
+            };
+
+            let response = client
+                .invoke(pulumirpc::CallbackInvokeRequest {
+                    token: callback.token.clone(),
+                    request: req_bytes,
+                })
+                .await
+                .map_err(|e| Status::internal(format!("transform callback failed: {e}")))?;
+
+            let resp_bytes = response.into_inner().response;
+            let transform_resp = pulumirpc::TransformResponse::decode(&*resp_bytes)
+                .map_err(|e| Status::internal(format!("failed to decode TransformResponse: {e}")))?;
+
+            object = transform_resp.properties;
+            if let Some(opts) = transform_resp.options {
+                ignore_changes = opts.ignore_changes;
+                additional_secret_outputs = opts.additional_secret_outputs;
+            }
+        }
+        Ok((object, ignore_changes, additional_secret_outputs))
     }
 }
 
@@ -171,7 +253,23 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
         &self,
         request: Request<pulumirpc::RegisterResourceRequest>,
     ) -> Result<Response<pulumirpc::RegisterResourceResponse>, Status> {
-        let req = request.into_inner();
+        let mut req = request.into_inner();
+
+        // Apply registered stack transforms before any other processing.
+        let (transformed_object, transformed_ignore, transformed_secrets) = self
+            .apply_transforms(
+                &req.r#type,
+                &req.name,
+                req.custom,
+                &req.parent,
+                req.object.clone(),
+                req.ignore_changes.clone(),
+                req.additional_secret_outputs.clone(),
+            )
+            .await?;
+        req.object = transformed_object;
+        req.ignore_changes = transformed_ignore;
+        req.additional_secret_outputs = transformed_secrets;
 
         let urn = self
             .state
@@ -356,8 +454,9 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
 
     async fn register_stack_transform(
         &self,
-        _request: Request<pulumirpc::Callback>,
+        request: Request<pulumirpc::Callback>,
     ) -> Result<Response<()>, Status> {
+        self.transforms.lock().await.push(request.into_inner());
         Ok(Response::new(()))
     }
 

@@ -2,10 +2,14 @@
 
 ## Transforms
 
-`RegisterStackTransform` and `RegisterStackInvokeTransform` are accepted
-but ignored. Implement transform execution during resource registration
-so that user-registered transforms are applied to resource inputs before
-they are sent to providers.
+**DONE.** `RegisterStackTransform` callbacks are now stored in
+`ResourceMonitorImpl` and invoked sequentially (in registration order) via
+the Callbacks gRPC service before each resource registration. Properties
+and options (`ignore_changes`, `additional_secret_outputs`) returned by
+transforms are applied before diffing and provider operations.
+
+`RegisterStackInvokeTransform` is still accepted but not yet executed
+(invoke-level transforms are a follow-up).
 
 ## Test Coverage
 

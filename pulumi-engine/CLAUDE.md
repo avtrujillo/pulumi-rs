@@ -97,7 +97,7 @@ The following behaviors were reviewed and confirmed to match the Go Pulumi engin
 
 ## Current limitations (TODOs)
 
-- **No transforms**: `RegisterStackTransform` and `RegisterStackInvokeTransform` are accepted but ignored.
+- **Invoke transforms**: `RegisterStackInvokeTransform` is accepted but not yet executed (resource transforms are done; invoke-level transforms are a follow-up).
 
 ## Integration with pulumi-automation
 
