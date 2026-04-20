@@ -75,11 +75,11 @@ pub mod invoke;
 pub mod log;
 pub mod output;
 pub mod resource;
+pub mod serde;
 pub mod stack;
 pub mod stack_reference;
+pub mod test_support;
 pub mod transform;
-
-pub mod serde;
 
 /// Generated protobuf types for the Pulumi gRPC protocol.
 #[allow(warnings)]
@@ -92,6 +92,7 @@ pub mod proto {
 // Re-export core types at the crate root.
 pub use connection::{
     EngineConnection, GrpcEngine, GrpcMonitor, MockEngine, MockMonitor, MonitorConnection,
+    ResourceRegistration,
 };
 pub use context::Context;
 pub use error::{Error, Result};
