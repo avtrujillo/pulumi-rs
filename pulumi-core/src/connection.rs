@@ -7,7 +7,9 @@
 //! Trait methods use RPITIT (return-position `impl Trait` in traits) for
 //! zero-cost async dispatch — no boxing, no vtables.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use tonic::transport::Channel;
 
@@ -192,26 +194,40 @@ impl EngineConnection for GrpcEngine {
 // MockMonitor — for testing without a running engine
 // ---------------------------------------------------------------------------
 
-/// A mock [`MonitorConnection`] that returns configurable responses.
+/// A resource registration captured by [`MockMonitor`] during testing.
+#[derive(Debug, Clone)]
+pub struct ResourceRegistration {
+    /// The Pulumi type token (e.g. `"aws:s3/bucket:Bucket"`).
+    pub type_token: String,
+    /// The logical resource name.
+    pub name: String,
+    /// The input properties as JSON.
+    pub inputs: serde_json::Value,
+    /// Whether this is a custom (leaf) resource.
+    pub custom: bool,
+    /// The parent resource URN, or empty if none.
+    pub parent: String,
+    /// URNs of resources this resource depends on.
+    pub depends_on: Vec<String>,
+    /// Whether the resource is protected from deletion.
+    pub protect: bool,
+}
+
+/// A mock [`MonitorConnection`] that records calls and returns configurable responses.
 ///
-/// By default, returns a synthetic URN and empty outputs for `register_resource`,
-/// and succeeds with no-ops for other operations.
-///
-/// # Example
-///
-/// ```ignore
-/// use pulumi_core::connection::{MockMonitor, MockEngine};
-/// use pulumi_core::context::{Context, Settings};
-///
-/// let monitor = MockMonitor::new("test-project", "dev");
-/// let engine = MockEngine::new();
-/// let settings = Settings { /* ... */ };
-/// let ctx = Context::for_testing(monitor, engine, settings);
-/// ```
+/// By default, echoes inputs back as outputs and returns a synthetic URN for
+/// `register_resource`. Use [`crate::test_support::TestContextBuilder`] to
+/// configure per-resource canned responses and preview mode.
 #[derive(Clone)]
 pub struct MockMonitor {
     project: String,
     stack: String,
+    /// Canned outputs keyed by (type_token, name). Immutable after construction.
+    responses: Arc<HashMap<(String, String), serde_json::Value>>,
+    /// All register_resource calls, shared across clones.
+    recordings: Arc<Mutex<Vec<ResourceRegistration>>>,
+    /// If true, return empty outputs (simulates pulumi preview).
+    preview: bool,
 }
 
 impl MockMonitor {
@@ -219,6 +235,26 @@ impl MockMonitor {
         Self {
             project: project.into(),
             stack: stack.into(),
+            responses: Arc::new(HashMap::new()),
+            recordings: Arc::new(Mutex::new(Vec::new())),
+            preview: false,
+        }
+    }
+
+    /// Constructs a monitor with canned responses and preview mode.
+    /// Used by [`crate::test_support::TestContextBuilder`].
+    pub(crate) fn with_responses(
+        project: String,
+        stack: String,
+        responses: HashMap<(String, String), serde_json::Value>,
+        preview: bool,
+    ) -> Self {
+        Self {
+            project,
+            stack,
+            responses: Arc::new(responses),
+            recordings: Arc::new(Mutex::new(Vec::new())),
+            preview,
         }
     }
 
@@ -228,6 +264,11 @@ impl MockMonitor {
             self.stack, self.project, resource_type, name
         )
     }
+
+    /// Returns all resource registrations recorded so far.
+    pub fn recorded_registrations(&self) -> Vec<ResourceRegistration> {
+        self.recordings.lock().unwrap().clone()
+    }
 }
 
 impl MonitorConnection for MockMonitor {
@@ -235,16 +276,43 @@ impl MonitorConnection for MockMonitor {
         &self,
         req: pulumirpc::RegisterResourceRequest,
     ) -> Result<pulumirpc::RegisterResourceResponse> {
+        let inputs_json = req
+            .object
+            .as_ref()
+            .map(crate::serde::struct_to_json)
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+
+        self.recordings.lock().unwrap().push(ResourceRegistration {
+            type_token: req.r#type.clone(),
+            name: req.name.clone(),
+            inputs: inputs_json,
+            custom: req.custom,
+            parent: req.parent.clone(),
+            depends_on: req.dependencies.clone(),
+            protect: req.protect.unwrap_or(false),
+        });
+
         let urn = self.make_urn(&req.r#type, &req.name);
         let id = if req.custom {
             format!("mock-id-{}", req.name)
         } else {
             String::new()
         };
+
+        let object = if self.preview {
+            Some(prost_types::Struct::default())
+        } else {
+            let key = (req.r#type.clone(), req.name.clone());
+            match self.responses.get(&key) {
+                Some(json) => Some(crate::serde::json_to_struct(json)),
+                None => req.object,
+            }
+        };
+
         Ok(pulumirpc::RegisterResourceResponse {
             urn,
             id,
-            object: req.object,
+            object,
             stable: true,
             stables: vec![],
             property_dependencies: Default::default(),
