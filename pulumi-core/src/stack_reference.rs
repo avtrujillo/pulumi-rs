@@ -104,7 +104,7 @@ impl<M: MonitorConnection, E: EngineConnection> StackReferenceBuilder<M, E> {
     }
 }
 
-const STACK_REFERENCE_TYPE: &str = "pulumi:pulumi:StackReference";
+pub(crate) const STACK_REFERENCE_TYPE: &str = "pulumi:pulumi:StackReference";
 
 impl<M: MonitorConnection, E: EngineConnection> IntoFuture for StackReferenceBuilder<M, E> {
     type Output = Result<StackReference>;
@@ -139,5 +139,142 @@ impl<M: MonitorConnection, E: EngineConnection> IntoFuture for StackReferenceBui
                 outputs: stack_outputs,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::resource::Resource;
+    use crate::test_support::TestContextBuilder;
+
+    // Fake Resource with the StackReference type token so TestContextBuilder
+    // can inject canned responses for the builder tests.
+    struct FakeStackRef;
+    #[derive(Serialize)]
+    struct FakeArgs {}
+    #[derive(Deserialize, Clone)]
+    struct FakeOutputs {}
+    impl Resource for FakeStackRef {
+        const TYPE_TOKEN: &'static str = STACK_REFERENCE_TYPE;
+        type Inputs = FakeArgs;
+        type Outputs = FakeOutputs;
+    }
+
+    fn make_ref() -> StackReference {
+        StackReference {
+            urn: "urn:test".into(),
+            outputs: serde_json::json!({
+                "vpcId": "vpc-123",
+                "count": 5,
+                "enabled": true
+            }),
+        }
+    }
+
+    // --- StackReference::get_output ---
+
+    #[test]
+    fn test_get_output_present() {
+        let sr = make_ref();
+        assert_eq!(sr.get_output("vpcId"), Some(&serde_json::json!("vpc-123")));
+    }
+
+    #[test]
+    fn test_get_output_missing() {
+        let sr = make_ref();
+        assert_eq!(sr.get_output("notThere"), None);
+    }
+
+    // --- StackReference::require_output ---
+
+    #[test]
+    fn test_require_output_present() {
+        let sr = make_ref();
+        let v: String = sr.require_output("vpcId").unwrap();
+        assert_eq!(v, "vpc-123");
+    }
+
+    #[test]
+    fn test_require_output_missing_is_err() {
+        let sr = make_ref();
+        assert!(sr.require_output::<String>("missing").is_err());
+    }
+
+    #[test]
+    fn test_require_output_wrong_type_is_err() {
+        let sr = make_ref();
+        // "vpcId" is a String, not an i64
+        assert!(sr.require_output::<i64>("vpcId").is_err());
+    }
+
+    // --- StackReference::get_output_typed ---
+
+    #[test]
+    fn test_get_output_typed_present() {
+        let sr = make_ref();
+        let v: Option<i64> = sr.get_output_typed("count").unwrap();
+        assert_eq!(v, Some(5));
+    }
+
+    #[test]
+    fn test_get_output_typed_missing_is_none() {
+        let sr = make_ref();
+        let v: Option<String> = sr.get_output_typed("missing").unwrap();
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn test_get_output_typed_wrong_type_is_err() {
+        let sr = make_ref();
+        // "vpcId" is a String, not an i64
+        assert!(sr.get_output_typed::<i64>("vpcId").is_err());
+    }
+
+    // --- StackReferenceBuilder ---
+
+    #[tokio::test]
+    async fn test_builder_extracts_outputs_from_wrapper() {
+        let tc = TestContextBuilder::new()
+            .with_resource_response::<FakeStackRef>(
+                "org/proj/infra",
+                serde_json::json!({ "outputs": { "vpcId": "vpc-456" }, "name": "org/proj/infra" }),
+            )
+            .build();
+        let sr = StackReferenceBuilder::new(tc.context(), "org/proj/infra")
+            .await
+            .unwrap();
+        assert_eq!(sr.get_output("vpcId"), Some(&serde_json::json!("vpc-456")));
+    }
+
+    #[tokio::test]
+    async fn test_builder_resource_name_override() {
+        let tc = TestContextBuilder::new()
+            .with_resource_response::<FakeStackRef>(
+                "custom-ref-name",
+                serde_json::json!({ "outputs": {} }),
+            )
+            .build();
+        let sr = StackReferenceBuilder::new(tc.context(), "org/proj/infra")
+            .resource_name("custom-ref-name")
+            .await
+            .unwrap();
+        let regs = tc.registered_resources();
+        // resource name is the override, not the stack name
+        assert_eq!(regs[0].name, "custom-ref-name");
+        // inputs still use the original stack name
+        assert_eq!(regs[0].inputs["name"], "org/proj/infra");
+        assert!(!sr.urn.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_builder_urn_uses_stack_reference_type() {
+        let tc = TestContextBuilder::new().build();
+        let sr = StackReferenceBuilder::new(tc.context(), "org/proj/infra")
+            .await
+            .unwrap();
+        assert!(sr.urn.contains(STACK_REFERENCE_TYPE));
     }
 }

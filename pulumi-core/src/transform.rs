@@ -225,7 +225,7 @@ pub async fn register_stack_transform<M: MonitorConnection, E: EngineConnection>
 // Conversion helpers between ResourceOptions and proto TransformResourceOptions
 // ---------------------------------------------------------------------------
 
-fn proto_opts_to_resource_options(
+pub(crate) fn proto_opts_to_resource_options(
     opts: Option<&pulumirpc::TransformResourceOptions>,
 ) -> ResourceOptions {
     let Some(opts) = opts else {
@@ -279,7 +279,7 @@ fn proto_opts_to_resource_options(
     }
 }
 
-fn resource_options_to_proto_opts(opts: &ResourceOptions) -> pulumirpc::TransformResourceOptions {
+pub(crate) fn resource_options_to_proto_opts(opts: &ResourceOptions) -> pulumirpc::TransformResourceOptions {
     pulumirpc::TransformResourceOptions {
         depends_on: opts.depends_on.clone(),
         protect: Some(opts.protect),
@@ -310,7 +310,7 @@ fn resource_options_to_proto_opts(opts: &ResourceOptions) -> pulumirpc::Transfor
     }
 }
 
-fn proto_alias_to_alias(proto: &pulumirpc::Alias) -> Alias {
+pub(crate) fn proto_alias_to_alias(proto: &pulumirpc::Alias) -> Alias {
     match &proto.alias {
         Some(pulumirpc::alias::Alias::Urn(urn)) => Alias::Urn(urn.clone()),
         Some(pulumirpc::alias::Alias::Spec(spec)) => Alias::Spec(AliasSpec {
@@ -340,5 +340,155 @@ fn proto_alias_to_alias(proto: &pulumirpc::Alias) -> Alias {
             }),
         }),
         None => Alias::Urn(String::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource::{AliasParent, ResourceOptions};
+
+    #[test]
+    fn test_proto_opts_none_gives_defaults() {
+        let opts = proto_opts_to_resource_options(None);
+        assert!(!opts.protect);
+        assert!(opts.depends_on.is_empty());
+        assert!(opts.provider.is_none());
+        assert!(opts.import_id.is_none());
+    }
+
+    #[test]
+    fn test_proto_opts_basic_fields() {
+        let proto = pulumirpc::TransformResourceOptions {
+            protect: Some(true),
+            depends_on: vec!["urn:a".into(), "urn:b".into()],
+            provider: "urn:provider".into(),
+            ignore_changes: vec!["prop1".into()],
+            version: "1.2.3".into(),
+            ..Default::default()
+        };
+        let opts = proto_opts_to_resource_options(Some(&proto));
+        assert!(opts.protect);
+        assert_eq!(opts.depends_on, ["urn:a", "urn:b"]);
+        assert_eq!(opts.provider.as_deref(), Some("urn:provider"));
+        assert_eq!(opts.ignore_changes, ["prop1"]);
+        assert_eq!(opts.version, "1.2.3");
+    }
+
+    #[test]
+    fn test_proto_opts_empty_provider_becomes_none() {
+        let proto = pulumirpc::TransformResourceOptions {
+            provider: String::new(),
+            ..Default::default()
+        };
+        let opts = proto_opts_to_resource_options(Some(&proto));
+        assert!(opts.provider.is_none());
+    }
+
+    #[test]
+    fn test_proto_opts_import_id() {
+        let proto = pulumirpc::TransformResourceOptions {
+            import: "existing-id".into(),
+            ..Default::default()
+        };
+        let opts = proto_opts_to_resource_options(Some(&proto));
+        assert_eq!(opts.import_id.as_deref(), Some("existing-id"));
+    }
+
+    #[test]
+    fn test_proto_opts_custom_timeouts() {
+        let proto = pulumirpc::TransformResourceOptions {
+            custom_timeouts: Some(pulumirpc::register_resource_request::CustomTimeouts {
+                create: "5m".into(),
+                update: "10m".into(),
+                delete: "15m".into(),
+            }),
+            ..Default::default()
+        };
+        let opts = proto_opts_to_resource_options(Some(&proto));
+        let t = opts.custom_timeouts.unwrap();
+        assert_eq!(t.create.as_deref(), Some("5m"));
+        assert_eq!(t.update.as_deref(), Some("10m"));
+        assert_eq!(t.delete.as_deref(), Some("15m"));
+    }
+
+    #[test]
+    fn test_resource_options_to_proto_opts_basic() {
+        let opts = ResourceOptions {
+            protect: true,
+            depends_on: vec!["urn:a".into()],
+            version: "2.0.0".into(),
+            provider: Some("urn:p".into()),
+            import_id: Some("import-me".into()),
+            ..Default::default()
+        };
+        let proto = resource_options_to_proto_opts(&opts);
+        assert_eq!(proto.protect, Some(true));
+        assert_eq!(proto.depends_on, ["urn:a"]);
+        assert_eq!(proto.version, "2.0.0");
+        assert_eq!(proto.provider, "urn:p");
+        assert_eq!(proto.import, "import-me");
+    }
+
+    #[test]
+    fn test_proto_alias_to_alias_urn() {
+        let proto = pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Urn("urn:old".into())),
+        };
+        let alias = proto_alias_to_alias(&proto);
+        assert!(matches!(alias, Alias::Urn(u) if u == "urn:old"));
+    }
+
+    #[test]
+    fn test_proto_alias_to_alias_spec_fields() {
+        let proto = pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Spec(pulumirpc::alias::Spec {
+                name: "old-name".into(),
+                r#type: "old:t:T".into(),
+                stack: "old-stack".into(),
+                project: "old-project".into(),
+                parent: None,
+            })),
+        };
+        let alias = proto_alias_to_alias(&proto);
+        let Alias::Spec(spec) = alias else { panic!("expected Alias::Spec") };
+        assert_eq!(spec.name.as_deref(), Some("old-name"));
+        assert_eq!(spec.r#type.as_deref(), Some("old:t:T"));
+        assert_eq!(spec.stack.as_deref(), Some("old-stack"));
+        assert_eq!(spec.project.as_deref(), Some("old-project"));
+        assert!(spec.parent.is_none());
+    }
+
+    #[test]
+    fn test_proto_alias_to_alias_parent_urn() {
+        let proto = pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Spec(pulumirpc::alias::Spec {
+                parent: Some(pulumirpc::alias::spec::Parent::ParentUrn("urn:parent".into())),
+                ..Default::default()
+            })),
+        };
+        let alias = proto_alias_to_alias(&proto);
+        let Alias::Spec(spec) = alias else { panic!("expected Alias::Spec") };
+        assert!(matches!(spec.parent, Some(AliasParent::Urn(u)) if u == "urn:parent"));
+    }
+
+    #[test]
+    fn test_proto_alias_to_alias_no_parent() {
+        let proto = pulumirpc::Alias {
+            alias: Some(pulumirpc::alias::Alias::Spec(pulumirpc::alias::Spec {
+                parent: Some(pulumirpc::alias::spec::Parent::NoParent(true)),
+                ..Default::default()
+            })),
+        };
+        let alias = proto_alias_to_alias(&proto);
+        let Alias::Spec(spec) = alias else { panic!("expected Alias::Spec") };
+        assert!(matches!(spec.parent, Some(AliasParent::NoParent)));
+    }
+
+    #[test]
+    fn test_proto_alias_to_alias_none_variant() {
+        let proto = pulumirpc::Alias { alias: None };
+        let alias = proto_alias_to_alias(&proto);
+        assert!(matches!(alias, Alias::Urn(u) if u.is_empty()));
     }
 }

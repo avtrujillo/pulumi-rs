@@ -343,3 +343,223 @@ async fn call_inner<A: Serialize + Send, M: MonitorConnection, E: EngineConnecti
 
     Ok((result, return_deps))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::connection::{MockEngine, MonitorConnection};
+    use crate::context::{Context, Settings};
+    use crate::error::{Error, Result};
+    use crate::proto::pulumirpc;
+    use crate::test_support::TestContextBuilder;
+
+    // --- Test fixture types ---
+
+    struct TestFn;
+
+    #[derive(Serialize)]
+    struct TestFnArgs {
+        input: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestFnReturns {
+        output: Option<String>,
+    }
+
+    impl ProviderFunction for TestFn {
+        const TOKEN: &'static str = "test:fn:doThing";
+        type Args = TestFnArgs;
+        type Returns = TestFnReturns;
+    }
+
+    #[derive(Debug)]
+    struct TestMethod;
+
+    #[derive(Serialize)]
+    struct TestMethodArgs {
+        val: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestMethodReturns {
+        result: Option<String>,
+    }
+
+    impl ComponentMethod for TestMethod {
+        const TOKEN: &'static str = "test:comp:MyComp/doThing";
+        type Args = TestMethodArgs;
+        type Returns = TestMethodReturns;
+    }
+
+    // --- Custom monitor that returns failures ---
+
+    #[derive(Clone)]
+    struct FailingMonitor;
+
+    impl MonitorConnection for FailingMonitor {
+        async fn register_resource(
+            &self,
+            req: pulumirpc::RegisterResourceRequest,
+        ) -> Result<pulumirpc::RegisterResourceResponse> {
+            Ok(pulumirpc::RegisterResourceResponse {
+                urn: format!("urn::{}", req.name),
+                id: String::new(),
+                object: req.object,
+                stable: true,
+                stables: vec![],
+                property_dependencies: Default::default(),
+                result: 0,
+            })
+        }
+
+        async fn register_resource_outputs(
+            &self,
+            _req: pulumirpc::RegisterResourceOutputsRequest,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_resource(
+            &self,
+            req: pulumirpc::ReadResourceRequest,
+        ) -> Result<pulumirpc::ReadResourceResponse> {
+            Ok(pulumirpc::ReadResourceResponse {
+                urn: String::new(),
+                properties: req.properties,
+            })
+        }
+
+        async fn invoke(
+            &self,
+            _req: pulumirpc::ResourceInvokeRequest,
+        ) -> Result<pulumirpc::InvokeResponse> {
+            Ok(pulumirpc::InvokeResponse {
+                r#return: None,
+                failures: vec![pulumirpc::CheckFailure {
+                    property: "input".into(),
+                    reason: "bad value".into(),
+                }],
+            })
+        }
+
+        async fn call(
+            &self,
+            _req: pulumirpc::ResourceCallRequest,
+        ) -> Result<pulumirpc::CallResponse> {
+            Ok(pulumirpc::CallResponse {
+                r#return: None,
+                failures: vec![pulumirpc::CheckFailure {
+                    property: "val".into(),
+                    reason: "invalid arg".into(),
+                }],
+                return_dependencies: Default::default(),
+            })
+        }
+
+        async fn register_stack_transform(&self, _req: pulumirpc::Callback) -> Result<()> {
+            Ok(())
+        }
+
+        async fn supports_feature(&self, _feature: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn failing_ctx() -> Context<FailingMonitor, MockEngine> {
+        let settings = Settings {
+            monitor_addr: String::new(),
+            engine_addr: String::new(),
+            project: "test".into(),
+            stack: "dev".into(),
+            dry_run: false,
+            parallel: -1,
+            organization: String::new(),
+            config: HashMap::new(),
+            config_secret_keys: Vec::new(),
+        };
+        Context::for_testing(FailingMonitor, MockEngine::new(), settings)
+    }
+
+    // --- InvokeBuilder ---
+
+    #[tokio::test]
+    async fn test_invoke_basic_returns_ok() {
+        let tc = TestContextBuilder::new().build();
+        // Fix F=TestFn; M and E are inferred from tc.context().
+        let result = InvokeBuilder::<TestFn, _, _>::new(tc.context(), TestFnArgs { input: "x".into() })
+            .await
+            .unwrap();
+        // MockMonitor returns empty struct → output deserializes as None
+        assert!(result.output.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_with_provider_option() {
+        let tc = TestContextBuilder::new().build();
+        let result = InvokeBuilder::<TestFn, _, _>::new(tc.context(), TestFnArgs { input: "x".into() })
+            .provider("urn:provider::explicit")
+            .await
+            .unwrap();
+        assert!(result.output.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_failure_returns_error() {
+        let ctx = failing_ctx();
+        let err = InvokeBuilder::<TestFn, FailingMonitor, MockEngine>::new(
+            &ctx,
+            TestFnArgs { input: "bad".into() },
+        )
+        .await
+        .unwrap_err();
+        let Error::InvokeFailure { token, failures } = err else {
+            panic!("expected InvokeFailure, got {err:?}");
+        };
+        assert_eq!(token, "test:fn:doThing");
+        assert_eq!(failures[0], ("input".into(), "bad value".into()));
+    }
+
+    // --- CallBuilder ---
+
+    #[tokio::test]
+    async fn test_call_basic_returns_ok() {
+        let tc = TestContextBuilder::new().build();
+        let result = CallBuilder::<TestMethod, _, _>::new(tc.context(), TestMethodArgs { val: "v".into() })
+            .await
+            .unwrap();
+        assert!(result.result.result.is_none());
+        assert!(result.return_deps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_call_with_arg_deps() {
+        let tc = TestContextBuilder::new().build();
+        let result = CallBuilder::<TestMethod, _, _>::new(tc.context(), TestMethodArgs { val: "v".into() })
+            .arg_dep("val", vec!["urn:dep".into()])
+            .await
+            .unwrap();
+        // MockMonitor ignores arg_deps but call still succeeds
+        assert!(result.result.result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_call_failure_returns_error() {
+        let ctx = failing_ctx();
+        let err = CallBuilder::<TestMethod, FailingMonitor, MockEngine>::new(
+            &ctx,
+            TestMethodArgs { val: "bad".into() },
+        )
+        .await
+        .unwrap_err();
+        let Error::InvokeFailure { token, failures } = err else {
+            panic!("expected InvokeFailure, got {err:?}");
+        };
+        assert_eq!(token, "test:comp:MyComp/doThing");
+        assert_eq!(failures[0].0, "val");
+    }
+}

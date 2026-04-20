@@ -18,13 +18,11 @@ Extend them to support:
 
 ## Test Coverage
 
-- `resource.rs` — no unit tests (relies on integration testing via gRPC)
-- `invoke.rs` — no unit tests
-- `stack_reference.rs` — no unit tests
-- `transform.rs` — no unit tests
-- `connection.rs` — no unit tests for mock implementations
-- `log.rs` — no unit tests
+**DONE.** Unit tests added to all previously uncovered modules:
 
-With the `MockMonitor`/`MockEngine` traits now in place, adding unit tests
-for resource registration, invocation, and stack operations is feasible
-without a running engine.
+- `resource.rs` — 10 tests: alias_to_proto (URN/Spec/NoParent/ParentUrn), ResourceBuilder (depends_on, parent), ComponentBuilder (custom=false, register_outputs), RemoteComponentBuilder, ReadBuilder (id preservation, props echo)
+- `invoke.rs` — 6 tests: InvokeBuilder (basic, provider option, failure→InvokeFailure), CallBuilder (basic, arg_deps, failure→InvokeFailure)
+- `stack_reference.rs` — 10 tests: get_output, require_output, get_output_typed (present/missing/wrong-type), builder (outputs extraction, resource_name override, URN format)
+- `transform.rs` — 11 tests: proto_opts_to_resource_options (None, basic fields, empty provider, import_id, custom_timeouts), resource_options_to_proto_opts, proto_alias_to_alias (Urn, Spec fields, ParentUrn, NoParent, None variant)
+- `connection.rs` — 19 tests: MockMonitor (type/name/custom, URN format, id for custom vs component, parent, depends_on, protect, preview, canned response, echo, clone sharing, invoke, call, read_resource, supports_feature), MockEngine (initial empty root, set/get root, clone sharing, log)
+- `log.rs` — 9 tests: Severity→i32 conversions (Debug/Info/Warning/Error), all 5 log functions return Ok

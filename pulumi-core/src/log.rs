@@ -86,3 +86,60 @@ pub async fn status<M: MonitorConnection, E: EngineConnection>(
 ) -> Result<()> {
     log_message(ctx, Severity::Info, message, urn, true).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::pulumirpc;
+    use crate::test_support::TestContextBuilder;
+
+    #[test]
+    fn test_severity_debug_value() {
+        assert_eq!(i32::from(Severity::Debug), pulumirpc::LogSeverity::Debug as i32);
+    }
+
+    #[test]
+    fn test_severity_info_value() {
+        assert_eq!(i32::from(Severity::Info), pulumirpc::LogSeverity::Info as i32);
+    }
+
+    #[test]
+    fn test_severity_warning_value() {
+        assert_eq!(i32::from(Severity::Warning), pulumirpc::LogSeverity::Warning as i32);
+    }
+
+    #[test]
+    fn test_severity_error_value() {
+        assert_eq!(i32::from(Severity::Error), pulumirpc::LogSeverity::Error as i32);
+    }
+
+    #[tokio::test]
+    async fn test_debug_ok() {
+        let tc = TestContextBuilder::new().build();
+        debug(tc.context(), "debug message", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_info_ok() {
+        let tc = TestContextBuilder::new().build();
+        info(tc.context(), "info message", Some("urn:test")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_warn_ok() {
+        let tc = TestContextBuilder::new().build();
+        warn(tc.context(), "warning message", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_error_ok() {
+        let tc = TestContextBuilder::new().build();
+        error(tc.context(), "error message", Some("urn:res")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_status_ok() {
+        let tc = TestContextBuilder::new().build();
+        status(tc.context(), "status message", None).await.unwrap();
+    }
+}

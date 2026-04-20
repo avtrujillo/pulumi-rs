@@ -789,7 +789,7 @@ pub(crate) async fn register_resource_outputs<M: MonitorConnection, E: EngineCon
     Ok(())
 }
 
-async fn read_resource_inner<M: MonitorConnection, E: EngineConnection>(
+pub(crate) async fn read_resource_inner<M: MonitorConnection, E: EngineConnection>(
     ctx: &Context<M, E>,
     resource_type: &str,
     name: &str,
@@ -835,4 +835,223 @@ async fn read_resource_inner<M: MonitorConnection, E: EngineConnection>(
         outputs,
         property_deps: HashMap::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::test_support::TestContextBuilder;
+
+    // --- Test fixture types ---
+
+    struct TestRes;
+
+    #[derive(Serialize)]
+    struct TestResArgs {
+        value: String,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct TestResOutputs {
+        value: Option<String>,
+    }
+
+    impl Resource for TestRes {
+        const TYPE_TOKEN: &'static str = "test:t:Res";
+        type Inputs = TestResArgs;
+        type Outputs = TestResOutputs;
+    }
+
+    struct TestComp;
+
+    impl ComponentResource for TestComp {
+        const TYPE_TOKEN: &'static str = "test:t:Comp";
+    }
+
+    struct TestRemote;
+
+    #[derive(Serialize)]
+    struct TestRemoteArgs {
+        name: String,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct TestRemoteOutputs {
+        id: Option<String>,
+    }
+
+    impl RemoteComponent for TestRemote {
+        const TYPE_TOKEN: &'static str = "test:t:Remote";
+        type Inputs = TestRemoteArgs;
+        type Outputs = TestRemoteOutputs;
+    }
+
+    // Also impl Resource so with_resource_response can inject canned outputs.
+    impl Resource for TestRemote {
+        const TYPE_TOKEN: &'static str = "test:t:Remote";
+        type Inputs = TestRemoteArgs;
+        type Outputs = TestRemoteOutputs;
+    }
+
+    // --- alias_to_proto ---
+
+    #[test]
+    fn test_alias_to_proto_urn() {
+        let alias = Alias::Urn("urn:pulumi:dev::p::t::old-name".into());
+        let proto = alias_to_proto(&alias);
+        assert!(
+            matches!(proto.alias, Some(crate::proto::pulumirpc::alias::Alias::Urn(u)) if u == "urn:pulumi:dev::p::t::old-name")
+        );
+    }
+
+    #[test]
+    fn test_alias_to_proto_spec_fields() {
+        let alias = Alias::Spec(AliasSpec {
+            name: Some("old-name".into()),
+            r#type: Some("old:t:T".into()),
+            stack: Some("old-stack".into()),
+            project: Some("old-project".into()),
+            parent: None,
+        });
+        let proto = alias_to_proto(&alias);
+        let Some(crate::proto::pulumirpc::alias::Alias::Spec(spec)) = proto.alias else {
+            panic!("expected Spec variant");
+        };
+        assert_eq!(spec.name, "old-name");
+        assert_eq!(spec.r#type, "old:t:T");
+        assert_eq!(spec.stack, "old-stack");
+        assert_eq!(spec.project, "old-project");
+    }
+
+    #[test]
+    fn test_alias_to_proto_no_parent() {
+        let alias = Alias::Spec(AliasSpec {
+            parent: Some(AliasParent::NoParent),
+            ..Default::default()
+        });
+        let proto = alias_to_proto(&alias);
+        let Some(crate::proto::pulumirpc::alias::Alias::Spec(spec)) = proto.alias else {
+            panic!("expected Spec variant");
+        };
+        assert!(
+            matches!(spec.parent, Some(crate::proto::pulumirpc::alias::spec::Parent::NoParent(true)))
+        );
+    }
+
+    #[test]
+    fn test_alias_to_proto_parent_urn() {
+        let alias = Alias::Spec(AliasSpec {
+            parent: Some(AliasParent::Urn("urn:parent".into())),
+            ..Default::default()
+        });
+        let proto = alias_to_proto(&alias);
+        let Some(crate::proto::pulumirpc::alias::Alias::Spec(spec)) = proto.alias else {
+            panic!("expected Spec variant");
+        };
+        assert!(
+            matches!(spec.parent, Some(crate::proto::pulumirpc::alias::spec::Parent::ParentUrn(u)) if u == "urn:parent")
+        );
+    }
+
+    // --- ResourceBuilder ---
+
+    #[tokio::test]
+    async fn test_resource_builder_depends_on_recorded() {
+        let tc = TestContextBuilder::new().build();
+        let _: RegisteredResource<TestRes> = ResourceBuilder::new(
+            tc.context(),
+            "my-res",
+            TestResArgs { value: "v".into() },
+        )
+        .depends_on("urn:dep-a")
+        .depends_on("urn:dep-b")
+        .await
+        .unwrap();
+        let recs = tc.registered_resources();
+        assert_eq!(recs[0].depends_on, ["urn:dep-a", "urn:dep-b"]);
+    }
+
+    #[tokio::test]
+    async fn test_resource_builder_parent_recorded() {
+        let tc = TestContextBuilder::new().build();
+        let _: RegisteredResource<TestRes> = ResourceBuilder::new(
+            tc.context(),
+            "child",
+            TestResArgs { value: "v".into() },
+        )
+        .parent("urn:pulumi:dev::p::test:t:P::root")
+        .await
+        .unwrap();
+        let recs = tc.registered_resources();
+        assert_eq!(recs[0].parent, "urn:pulumi:dev::p::test:t:P::root");
+    }
+
+    // --- ComponentBuilder ---
+
+    #[tokio::test]
+    async fn test_component_builder_registers_as_non_custom() {
+        let tc = TestContextBuilder::new().build();
+        let comp: RegisteredComponent<TestComp> =
+            ComponentBuilder::new(tc.context(), "my-comp").await.unwrap();
+        assert!(!comp.urn.is_empty());
+        let recs = tc.registered_resources();
+        assert_eq!(recs[0].type_token, "test:t:Comp");
+        assert!(!recs[0].custom);
+    }
+
+    #[tokio::test]
+    async fn test_component_register_outputs_ok() {
+        let tc = TestContextBuilder::new().build();
+        let comp: RegisteredComponent<TestComp> =
+            ComponentBuilder::new(tc.context(), "my-comp").await.unwrap();
+        comp.register_outputs(tc.context(), serde_json::json!({"key": "value"}))
+            .await
+            .unwrap();
+    }
+
+    // --- RemoteComponentBuilder ---
+
+    #[tokio::test]
+    async fn test_remote_component_builder_returns_outputs() {
+        let tc = TestContextBuilder::new()
+            .with_resource_response::<TestRemote>(
+                "my-remote",
+                serde_json::json!({ "id": "remote-id-123" }),
+            )
+            .build();
+        let result: RegisteredRemoteComponent<TestRemote> = RemoteComponentBuilder::new(
+            tc.context(),
+            "my-remote",
+            TestRemoteArgs { name: "test".into() },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outputs.id.as_deref(), Some("remote-id-123"));
+        assert!(!result.urn.is_empty());
+    }
+
+    // --- ReadBuilder ---
+
+    #[tokio::test]
+    async fn test_read_builder_id_preserved() {
+        let tc = TestContextBuilder::new().build();
+        let result: RegisteredResource<TestRes> =
+            ReadBuilder::new(tc.context(), "imported", "existing-id-456")
+                .await
+                .unwrap();
+        assert_eq!(result.id, "existing-id-456");
+    }
+
+    #[tokio::test]
+    async fn test_read_builder_props_echoed_as_outputs() {
+        let tc = TestContextBuilder::new().build();
+        let result: RegisteredResource<TestRes> =
+            ReadBuilder::new(tc.context(), "imported", "id-123")
+                .props(serde_json::json!({ "value": "existing-value" }))
+                .await
+                .unwrap();
+        assert_eq!(result.outputs.value.as_deref(), Some("existing-value"));
+    }
 }

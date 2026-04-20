@@ -4,7 +4,7 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium | Easy | MockMonitor/MockEngine already exist; mostly writing tests against known interfaces |
+| 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium | Easy | **DONE.** 77 new tests across resource.rs, invoke.rs, stack_reference.rs, log.rs, transform.rs, connection.rs (104 total, up from 27). |
 | 2 | TestContext builder | `pulumi-core` | Medium | Medium | **DONE.** `TestContextBuilder` and `TestContext` in `test_support.rs`; supports canned responses, preview mode, config injection, and registration assertions. |
 | 3 | Transforms | `pulumi-engine` | Medium | Hard | **DONE.** `register_stack_transform` now stores callbacks and invokes them sequentially via gRPC before each resource registration. |
 | 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | **DONE.** Config operations (`get_config`, `set_config`, `get_all_config`, `remove_config`) persisted to `.pulumi-rs/<stack>.config.json`; `outputs()` reads from checkpoint; `PULUMI_CONFIG`/`PULUMI_CONFIG_SECRET_KEYS` wired correctly to the program; structured engine events (Prelude, ResourceStep, Diagnostic, Summary) now populated in all result types. |
