@@ -5,7 +5,7 @@
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
 | 1 | Unit test coverage (resource.rs, invoke.rs, etc.) | `pulumi-core` | Medium | Easy | MockMonitor/MockEngine already exist; mostly writing tests against known interfaces |
-| 2 | TestContext builder | `pulumi-core` | Medium | Medium | Requires designing a clean public API on top of the mock layer; needs per-resource response config and preview-mode (unknown) simulation |
+| 2 | TestContext builder | `pulumi-core` | Medium | Medium | **DONE.** `TestContextBuilder` and `TestContext` in `test_support.rs`; supports canned responses, preview mode, config injection, and registration assertions. |
 | 3 | Transforms | `pulumi-engine` | Medium | Hard | **DONE.** `register_stack_transform` now stores callbacks and invokes them sequentially via gRPC before each resource registration. |
 | 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | NativeStack works for basic flows; needs feature parity with CLI-based Stack (config, secrets provider selection, event streaming, plugin management) |
 | 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
@@ -26,7 +26,7 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
 | 1 | Unit test coverage | Many tests to write, but each is independent → moderate total | Low peak — patterns are repetitive, mocks already exist |
-| 2 | TestContext builder | Moderate total — one API surface to build | Moderate peak — mock layer + public API design need to be in context together |
+| 2 | TestContext builder | Moderate total — one API surface to build | Moderate peak — mock layer + public API design need to be in context together | **DONE** |
 | 3 | Transforms | Moderate total — not a lot of code | High peak — orchestrator + registration flow + ordering semantics all need to be in-context simultaneously | **DONE** |
 | 4 | NativeStack parity | Moderate total — filling in missing features one by one | Moderate peak — need CLI Stack as reference while building NativeStack |
 | 5 | Engine test coverage | Moderate total — similar scope to #1 | Moderate peak — gRPC server setup and service internals must be understood together |
