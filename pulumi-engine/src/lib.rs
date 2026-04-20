@@ -33,6 +33,7 @@
 pub mod diff;
 pub mod engine_service;
 pub mod error;
+pub mod events;
 pub mod monitor_service;
 pub mod orchestrator;
 pub mod provider;

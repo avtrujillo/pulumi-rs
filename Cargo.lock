@@ -982,6 +982,7 @@ dependencies = [
  "pulumi-engine",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -1030,6 +1031,7 @@ dependencies = [
  "base64",
  "hmac",
  "pbkdf2",
+ "prost",
  "prost-types",
  "pulumi-core",
  "rand",

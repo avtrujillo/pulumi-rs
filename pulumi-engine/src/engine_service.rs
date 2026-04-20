@@ -2,17 +2,19 @@
 //!
 //! Handles logging and root resource management for the Pulumi program.
 
+use crate::events::{self, EventCollector};
 use crate::pulumirpc;
 use crate::state::EngineState;
 use tonic::{Request, Response, Status};
 
 pub struct EngineServiceImpl {
     state: EngineState,
+    events: Option<EventCollector>,
 }
 
 impl EngineServiceImpl {
-    pub fn new(state: EngineState) -> Self {
-        Self { state }
+    pub fn new(state: EngineState, events: Option<EventCollector>) -> Self {
+        Self { state, events }
     }
 }
 
@@ -21,20 +23,30 @@ impl pulumirpc::engine_server::Engine for EngineServiceImpl {
     async fn log(&self, request: Request<pulumirpc::LogRequest>) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         let severity = match req.severity {
-            0 => "DEBUG",
-            1 => "INFO",
-            2 => "WARN",
-            3 => "ERROR",
-            _ => "UNKNOWN",
+            0 => "debug",
+            1 => "info",
+            2 => "warning",
+            3 => "error",
+            _ => "info",
         };
 
-        // For now, just print to stderr like the real engine does.
         let urn_suffix = if req.urn.is_empty() {
             String::new()
         } else {
             format!(" ({})", req.urn)
         };
-        eprintln!("[{severity}]{urn_suffix} {}", req.message);
+        eprintln!("[{}]{urn_suffix} {}", severity.to_uppercase(), req.message);
+
+        if let Some(ev) = &self.events {
+            events::emit(
+                ev,
+                events::EngineEvent::Diagnostic {
+                    urn: req.urn.clone(),
+                    severity: severity.to_string(),
+                    message: req.message.clone(),
+                },
+            );
+        }
 
         Ok(Response::new(()))
     }

@@ -10,6 +10,7 @@ use tonic::transport::Server;
 use crate::diff::{RefreshDiff, diff_refresh};
 use crate::engine_service::EngineServiceImpl;
 use crate::error::{Error, Result};
+use crate::events;
 use crate::monitor_service::ResourceMonitorImpl;
 use crate::provider::{self, GrpcProvider, Provider, ProviderManager, json_to_proto_struct};
 use crate::pulumirpc;
@@ -29,6 +30,11 @@ pub struct EngineOptions {
     pub program: Vec<String>,
     /// Whether this is a dry run (preview).
     pub dry_run: bool,
+    /// Pulumi configuration key-value pairs passed to the program via PULUMI_CONFIG.
+    /// Keys should be fully-qualified (e.g. `"myproject:apiKey"`).
+    pub config: HashMap<String, String>,
+    /// Config keys whose values are secret (passed via PULUMI_CONFIG_SECRET_KEYS).
+    pub config_secret_keys: Vec<String>,
     /// Extra environment variables to pass to the program.
     pub env: HashMap<String, String>,
     /// Path to the checkpoint file for state persistence.
@@ -47,6 +53,8 @@ impl Default for EngineOptions {
             work_dir: PathBuf::from("."),
             program: Vec::new(),
             dry_run: false,
+            config: HashMap::new(),
+            config_secret_keys: Vec::new(),
             env: HashMap::new(),
             checkpoint_path: None,
             secrets_manager: None,
@@ -74,6 +82,8 @@ pub struct UpResult {
     pub stdout: String,
     /// The stderr from the user program.
     pub stderr: String,
+    /// Structured events emitted during the operation.
+    pub events: Vec<crate::events::EngineEvent>,
 }
 
 /// The result of a destroy operation.
@@ -83,6 +93,8 @@ pub struct DestroyResult {
     pub stdout: String,
     /// Any warnings or errors.
     pub stderr: String,
+    /// Structured events emitted during the operation.
+    pub events: Vec<crate::events::EngineEvent>,
 }
 
 /// The result of a refresh operation.
@@ -94,6 +106,8 @@ pub struct RefreshResult {
     pub stderr: String,
     /// Per-resource drift information.
     pub diffs: Vec<RefreshDiff>,
+    /// Structured events emitted during the operation.
+    pub events: Vec<crate::events::EngineEvent>,
 }
 
 /// The Rust-native Pulumi engine, parameterized over a [`Provider`] implementation.
@@ -161,9 +175,11 @@ impl<P: Provider> PulumiEngine<P> {
     /// Calls [`Provider::delete`] for each custom resource in reverse
     /// dependency order, then clears the checkpoint.
     pub async fn destroy(&self) -> Result<DestroyResult> {
+        let start = std::time::Instant::now();
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = self.load_checkpoint(&checkpoint_path).await?;
 
+        let mut ev: Vec<events::EngineEvent> = Vec::new();
         let mut summary = String::new();
 
         match checkpoint {
@@ -171,13 +187,15 @@ impl<P: Provider> PulumiEngine<P> {
                 summary.push_str("No resources to destroy (no checkpoint found).\n");
             }
             Some(cp) => {
+                let config_json = serde_json::to_value(&self.options.config).unwrap_or_default();
+                ev.push(events::EngineEvent::Prelude { config: config_json });
+
                 let state = EngineState::from_checkpoint(&cp);
                 let resources = state.get_prior_resources().await;
 
                 if resources.is_empty() {
                     summary.push_str("No resources to destroy.\n");
                 } else {
-                    // Delete in reverse order (children before parents).
                     let mut ordered: Vec<_> = cp.resources.iter().collect();
                     ordered.reverse();
 
@@ -234,11 +252,19 @@ impl<P: Provider> PulumiEngine<P> {
                                 res.name, res.resource_type
                             ));
                         }
+                        ev.push(events::EngineEvent::ResourceStep {
+                            op: "delete".to_string(),
+                            urn: res.urn.clone(),
+                            resource_type: res.resource_type.clone(),
+                            old_inputs: res.inputs.clone(),
+                            old_outputs: res.outputs.clone(),
+                            new_inputs: serde_json::Value::Null,
+                            new_outputs: serde_json::Value::Null,
+                        });
                     }
 
                     self.providers.shutdown_all().await;
 
-                    // Save empty checkpoint.
                     let empty = state.empty_checkpoint().await;
                     self.save_checkpoint(&empty, &checkpoint_path).await?;
 
@@ -247,9 +273,17 @@ impl<P: Provider> PulumiEngine<P> {
             }
         }
 
+        let resource_changes = events::count_resource_changes(&ev);
+        ev.push(events::EngineEvent::Summary {
+            may_update: true,
+            duration_seconds: start.elapsed().as_secs() as i64,
+            resource_changes,
+        });
+
         Ok(DestroyResult {
             stdout: summary,
             stderr: String::new(),
+            events: ev,
         })
     }
 
@@ -258,9 +292,11 @@ impl<P: Provider> PulumiEngine<P> {
     /// Calls [`Provider::read`] for each custom resource to sync state with
     /// the actual cloud provider, then saves the updated checkpoint.
     pub async fn refresh(&self) -> Result<RefreshResult> {
+        let start = std::time::Instant::now();
         let checkpoint_path = self.options.checkpoint_path();
         let checkpoint = self.load_checkpoint(&checkpoint_path).await?;
 
+        let mut ev: Vec<events::EngineEvent> = Vec::new();
         let mut summary = String::new();
 
         match checkpoint {
@@ -268,6 +304,9 @@ impl<P: Provider> PulumiEngine<P> {
                 summary.push_str("No checkpoint found, nothing to refresh.\n");
             }
             Some(mut cp) => {
+                let config_json = serde_json::to_value(&self.options.config).unwrap_or_default();
+                ev.push(events::EngineEvent::Prelude { config: config_json });
+
                 let mut updated_resources = Vec::new();
                 let mut diffs = Vec::new();
 
@@ -361,11 +400,41 @@ impl<P: Provider> PulumiEngine<P> {
                 cp.resources = updated_resources;
                 self.save_checkpoint(&cp, &checkpoint_path).await?;
 
+                // Emit a ResourceStep event for each refreshed resource.
+                for d in &diffs {
+                    use crate::diff::RefreshAction;
+                    let op = match d.action {
+                        RefreshAction::Same => "same",
+                        RefreshAction::Updated => "update",
+                        RefreshAction::Deleted => "delete",
+                    };
+                    // For refresh we don't have the full old/new state here,
+                    // so use Null placeholders — the diff already captures the
+                    // changed keys.
+                    ev.push(events::EngineEvent::ResourceStep {
+                        op: op.to_string(),
+                        urn: d.urn.clone(),
+                        resource_type: String::new(),
+                        old_inputs: serde_json::Value::Null,
+                        old_outputs: serde_json::Value::Null,
+                        new_inputs: serde_json::Value::Null,
+                        new_outputs: serde_json::Value::Null,
+                    });
+                }
+
+                let resource_changes = events::count_resource_changes(&ev);
+                ev.push(events::EngineEvent::Summary {
+                    may_update: false,
+                    duration_seconds: start.elapsed().as_secs() as i64,
+                    resource_changes,
+                });
+
                 summary = format_refresh_summary(&diffs);
                 return Ok(RefreshResult {
                     stdout: summary,
                     stderr: String::new(),
                     diffs,
+                    events: ev,
                 });
             }
         }
@@ -374,10 +443,12 @@ impl<P: Provider> PulumiEngine<P> {
             stdout: summary,
             stderr: String::new(),
             diffs: vec![],
+            events: ev,
         })
     }
 
     async fn run_program(&self, dry_run: bool) -> Result<UpResult> {
+        let start = std::time::Instant::now();
         let checkpoint_path = self.options.checkpoint_path();
 
         // Load prior state from checkpoint.
@@ -385,6 +456,17 @@ impl<P: Provider> PulumiEngine<P> {
             Some(cp) => EngineState::from_checkpoint(&cp),
             None => EngineState::new(self.options.project.clone(), self.options.stack.clone()),
         };
+
+        // Shared event collector — passed to both gRPC services.
+        let event_collector = events::new_collector();
+
+        // Emit the prelude event with the current config.
+        events::emit(
+            &event_collector,
+            events::EngineEvent::Prelude {
+                config: serde_json::to_value(&self.options.config).unwrap_or_default(),
+            },
+        );
 
         // Bind the gRPC servers to ephemeral ports.
         let monitor_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -409,6 +491,7 @@ impl<P: Provider> PulumiEngine<P> {
             state.clone(),
             dry_run || self.options.dry_run,
             self.providers.clone(),
+            Some(event_collector.clone()),
         );
         let monitor_handle = tokio::spawn(async move {
             Server::builder()
@@ -422,7 +505,7 @@ impl<P: Provider> PulumiEngine<P> {
         });
 
         // Start the Engine server.
-        let engine_svc = EngineServiceImpl::new(state.clone());
+        let engine_svc = EngineServiceImpl::new(state.clone(), Some(event_collector.clone()));
         let engine_handle = tokio::spawn(async move {
             Server::builder()
                 .add_service(pulumirpc::engine_server::EngineServer::new(engine_svc))
@@ -432,8 +515,10 @@ impl<P: Provider> PulumiEngine<P> {
                 .await
         });
 
-        // Build the config JSON.
-        let config_json = serde_json::to_string(&self.options.env).unwrap_or_default();
+        // Build the PULUMI_CONFIG JSON ({"key": "value", ...}).
+        let config_json = serde_json::to_string(&self.options.config).unwrap_or_default();
+        let secret_keys_json =
+            serde_json::to_string(&self.options.config_secret_keys).unwrap_or_default();
 
         // Spawn the user's program with PULUMI_* env vars.
         let program = &self.options.program;
@@ -460,7 +545,8 @@ impl<P: Provider> PulumiEngine<P> {
                 },
             )
             .env("PULUMI_PARALLEL", "-1")
-            .env("PULUMI_CONFIG", &config_json);
+            .env("PULUMI_CONFIG", &config_json)
+            .env("PULUMI_CONFIG_SECRET_KEYS", &secret_keys_json);
 
         for (k, v) in &self.options.env {
             cmd.env(k, v);
@@ -516,8 +602,32 @@ impl<P: Provider> PulumiEngine<P> {
                             eprintln!("[engine] delete (preview): {urn}");
                         }
                     }
+                    events::emit(
+                        &event_collector,
+                        events::EngineEvent::ResourceStep {
+                            op: "delete".to_string(),
+                            urn: urn.clone(),
+                            resource_type: res.resource_type.clone(),
+                            old_inputs: res.inputs.clone(),
+                            old_outputs: res.outputs.clone(),
+                            new_inputs: serde_json::Value::Null,
+                            new_outputs: serde_json::Value::Null,
+                        },
+                    );
                 } else {
                     eprintln!("[engine] delete: {urn}");
+                    events::emit(
+                        &event_collector,
+                        events::EngineEvent::ResourceStep {
+                            op: "delete".to_string(),
+                            urn: urn.clone(),
+                            resource_type: String::new(),
+                            old_inputs: serde_json::Value::Null,
+                            old_outputs: serde_json::Value::Null,
+                            new_inputs: serde_json::Value::Null,
+                            new_outputs: serde_json::Value::Null,
+                        },
+                    );
                 }
             } else {
                 eprintln!("[engine] delete: {urn}");
@@ -535,10 +645,24 @@ impl<P: Provider> PulumiEngine<P> {
             self.save_checkpoint(&checkpoint, &checkpoint_path).await?;
         }
 
+        // Emit summary and collect all events.
+        let collected = events::drain(&event_collector);
+        let resource_changes = events::count_resource_changes(&collected);
+        events::emit(
+            &event_collector,
+            events::EngineEvent::Summary {
+                may_update: !dry_run && !self.options.dry_run,
+                duration_seconds: start.elapsed().as_secs() as i64,
+                resource_changes,
+            },
+        );
+        let all_events = events::drain(&event_collector);
+
         Ok(UpResult {
             outputs,
             stdout,
             stderr,
+            events: all_events,
         })
     }
 }
