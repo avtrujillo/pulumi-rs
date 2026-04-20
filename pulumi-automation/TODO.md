@@ -12,7 +12,19 @@
 - `outputs()` reads directly from the checkpoint file
 - Secret detection in outputs via `is_json_secret()` was already implemented
 
-Remaining gap: structured engine events (equivalent to `--event-log` in the CLI) are not yet surfaced — `events` is always `Vec::new()` in all result types.
+Structured engine events are now surfaced — see below.
+
+## Engine Events
+
+**DONE.** `NativeStack` now populates the `events` field in all result types:
+- `Prelude` — emitted at the start of each operation with the current config
+- `ResourceStep` — emitted for each resource (create/update/same/delete) with old/new inputs and outputs
+- `Diagnostic` — emitted for every `Engine.Log` RPC call from the program
+- `Summary` — emitted at the end with duration and per-op resource change counts
+
+Events are collected via a shared `EventCollector` (`Arc<Mutex<Vec<EngineEvent>>>`) passed
+to both the `ResourceMonitorImpl` and `EngineServiceImpl` gRPC service handlers, then
+converted to the `pulumi_automation::event::EngineEvent` format in `native.rs`.
 
 ## Error Handling Improvements
 

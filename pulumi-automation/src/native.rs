@@ -6,8 +6,13 @@
 
 use crate::config::ConfigValue;
 use crate::error::{Error, Result};
+use crate::event::{
+    DiagnosticEvent, EngineEvent, PreludeEvent, ResourcePreEvent, StepEventMetadata,
+    StepEventStateMetadata, SummaryEvent,
+};
 use crate::stack::{OutputValue, UpResult};
 use crate::workspace::LocalWorkspace;
+use pulumi_engine::events::EngineEvent as NativeEvent;
 use pulumi_engine::secrets::PassphraseSecretsManager;
 use pulumi_engine::{Checkpoint, EngineOptions, PulumiEngine};
 use std::collections::HashMap;
@@ -148,12 +153,13 @@ impl NativeStack {
             .map_err(|e| Error::Custom(e.to_string()))?;
 
         let outputs = convert_outputs(&result.outputs);
+        let events = convert_events(result.events);
 
         Ok(UpResult {
             stdout: result.stdout,
             stderr: result.stderr,
             outputs,
-            events: Vec::new(),
+            events,
         })
     }
 
@@ -169,7 +175,7 @@ impl NativeStack {
         Ok(crate::stack::PreviewResult {
             stdout: result.stdout,
             stderr: result.stderr,
-            events: Vec::new(),
+            events: convert_events(result.events),
         })
     }
 
@@ -185,7 +191,7 @@ impl NativeStack {
         Ok(crate::stack::DestroyResult {
             stdout: result.stdout,
             stderr: result.stderr,
-            events: Vec::new(),
+            events: convert_events(result.events),
         })
     }
 
@@ -201,7 +207,7 @@ impl NativeStack {
         Ok(crate::stack::RefreshResult {
             stdout: result.stdout,
             stderr: result.stderr,
-            events: Vec::new(),
+            events: convert_events(result.events),
         })
     }
 
@@ -254,6 +260,101 @@ impl NativeStack {
         config.remove(key);
         self.save_config_map(&config)
     }
+}
+
+/// Convert native engine events into the automation-layer EngineEvent format.
+fn convert_events(native_events: Vec<NativeEvent>) -> Vec<EngineEvent> {
+    native_events
+        .into_iter()
+        .enumerate()
+        .map(|(i, ev)| {
+            let seq = i as i64 + 1;
+            match ev {
+                NativeEvent::Prelude { config } => EngineEvent {
+                    sequence: seq,
+                    prelude_event: Some(PreludeEvent { config }),
+                    resource_pre_event: None,
+                    summary_event: None,
+                    diagnostic_event: None,
+                },
+                NativeEvent::ResourceStep {
+                    op,
+                    urn,
+                    resource_type,
+                    old_inputs,
+                    old_outputs,
+                    new_inputs,
+                    new_outputs,
+                } => {
+                    let old = if old_inputs.is_null() && old_outputs.is_null() {
+                        None
+                    } else {
+                        Some(StepEventStateMetadata {
+                            resource_type: resource_type.clone(),
+                            urn: urn.clone(),
+                            inputs: old_inputs,
+                            outputs: old_outputs,
+                        })
+                    };
+                    let new = if new_inputs.is_null() && new_outputs.is_null() {
+                        None
+                    } else {
+                        Some(StepEventStateMetadata {
+                            resource_type: resource_type.clone(),
+                            urn: urn.clone(),
+                            inputs: new_inputs,
+                            outputs: new_outputs,
+                        })
+                    };
+                    EngineEvent {
+                        sequence: seq,
+                        prelude_event: None,
+                        resource_pre_event: Some(ResourcePreEvent {
+                            metadata: StepEventMetadata {
+                                op,
+                                urn,
+                                resource_type,
+                                old,
+                                new,
+                            },
+                        }),
+                        summary_event: None,
+                        diagnostic_event: None,
+                    }
+                }
+                NativeEvent::Diagnostic {
+                    urn,
+                    severity,
+                    message,
+                } => EngineEvent {
+                    sequence: seq,
+                    prelude_event: None,
+                    resource_pre_event: None,
+                    summary_event: None,
+                    diagnostic_event: Some(DiagnosticEvent {
+                        urn,
+                        severity,
+                        message,
+                    }),
+                },
+                NativeEvent::Summary {
+                    may_update,
+                    duration_seconds,
+                    resource_changes,
+                } => EngineEvent {
+                    sequence: seq,
+                    prelude_event: None,
+                    resource_pre_event: None,
+                    summary_event: Some(SummaryEvent {
+                        may_update,
+                        duration_seconds,
+                        resource_changes,
+                    }),
+                    diagnostic_event: None,
+                },
+            }
+        })
+        .collect()
 }
 
 /// Convert serde_json::Value outputs into the HashMap<String, OutputValue> format.

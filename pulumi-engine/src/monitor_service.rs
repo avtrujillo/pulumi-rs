@@ -5,6 +5,7 @@
 //! [`Provider`](crate::provider::Provider) trait.
 
 use crate::diff::{self, ResourceAction};
+use crate::events::{self, EventCollector};
 use crate::provider::{self, Provider, ProviderManager};
 use crate::pulumirpc;
 use crate::secrets::is_json_secret;
@@ -28,16 +29,23 @@ pub struct ResourceMonitorImpl<P: Provider> {
             >,
         >,
     >,
+    events: Option<EventCollector>,
 }
 
 impl<P: Provider> ResourceMonitorImpl<P> {
-    pub fn new(state: EngineState, dry_run: bool, providers: ProviderManager<P>) -> Self {
+    pub fn new(
+        state: EngineState,
+        dry_run: bool,
+        providers: ProviderManager<P>,
+        events: Option<EventCollector>,
+    ) -> Self {
         Self {
             state,
             dry_run,
             providers,
             transforms: Arc::new(Mutex::new(Vec::new())),
             callback_clients: Arc::new(Mutex::new(HashMap::new())),
+            events,
         }
     }
 
@@ -397,6 +405,33 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             .as_ref()
             .map(proto_struct_to_json)
             .unwrap_or_else(|| inputs.clone());
+
+        // Emit a structured event for this resource step.
+        if let Some(ev) = &self.events {
+            let op = match diff_result.action {
+                ResourceAction::Create => "create",
+                ResourceAction::Update => "update",
+                ResourceAction::Same => "same",
+            };
+            events::emit(
+                ev,
+                events::EngineEvent::ResourceStep {
+                    op: op.to_string(),
+                    urn: urn.clone(),
+                    resource_type: req.r#type.clone(),
+                    old_inputs: prior
+                        .as_ref()
+                        .map(|p| p.inputs.clone())
+                        .unwrap_or(serde_json::Value::Null),
+                    old_outputs: prior
+                        .as_ref()
+                        .map(|p| p.outputs.clone())
+                        .unwrap_or(serde_json::Value::Null),
+                    new_inputs: inputs.clone(),
+                    new_outputs: outputs_json.clone(),
+                },
+            );
+        }
 
         let dependencies = req.dependencies.clone();
 
