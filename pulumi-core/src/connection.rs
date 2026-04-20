@@ -410,3 +410,263 @@ impl EngineConnection for MockEngine {
         Ok(pulumirpc::GetRootResourceResponse { urn })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::serde::struct_to_json;
+
+    fn reg_req(type_token: &str, name: &str, custom: bool) -> pulumirpc::RegisterResourceRequest {
+        pulumirpc::RegisterResourceRequest {
+            r#type: type_token.into(),
+            name: name.into(),
+            custom,
+            ..Default::default()
+        }
+    }
+
+    // --- MockMonitor ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_type_name_custom() {
+        let m = MockMonitor::new("proj", "dev");
+        m.register_resource(reg_req("test:a:A", "my-res", true)).await.unwrap();
+        let recs = m.recorded_registrations();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].type_token, "test:a:A");
+        assert_eq!(recs[0].name, "my-res");
+        assert!(recs[0].custom);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_urn_format() {
+        let m = MockMonitor::new("myproj", "staging");
+        let resp = m.register_resource(reg_req("test:idx:Res", "r1", true)).await.unwrap();
+        assert_eq!(resp.urn, "urn:pulumi:staging::myproj::test:idx:Res::r1");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_custom_resource_gets_id() {
+        let m = MockMonitor::new("p", "s");
+        let resp = m.register_resource(reg_req("test:t:T", "foo", true)).await.unwrap();
+        assert_eq!(resp.id, "mock-id-foo");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_component_gets_empty_id() {
+        let m = MockMonitor::new("p", "s");
+        let resp = m.register_resource(reg_req("test:t:C", "comp", false)).await.unwrap();
+        assert!(resp.id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_parent() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "child".into(),
+            parent: "urn:pulumi:s::p::test:t:P::root".into(),
+            custom: true,
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        assert_eq!(m.recorded_registrations()[0].parent, "urn:pulumi:s::p::test:t:P::root");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_depends_on() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            custom: true,
+            dependencies: vec!["urn:a".into(), "urn:b".into()],
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        assert_eq!(m.recorded_registrations()[0].depends_on, ["urn:a", "urn:b"]);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_protect() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            custom: true,
+            protect: Some(true),
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        assert!(m.recorded_registrations()[0].protect);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_preview_returns_empty_outputs() {
+        let m = MockMonitor::with_responses("p".into(), "s".into(), HashMap::new(), true);
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            custom: true,
+            object: Some(prost_types::Struct::default()),
+            ..Default::default()
+        };
+        let resp = m.register_resource(req).await.unwrap();
+        assert!(resp.object.unwrap_or_default().fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_canned_response() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            ("test:t:T".into(), "r".into()),
+            serde_json::json!({ "arn": "arn:test:::r" }),
+        );
+        let m = MockMonitor::with_responses("p".into(), "s".into(), responses, false);
+        let req = reg_req("test:t:T", "r", true);
+        let resp = m.register_resource(req).await.unwrap();
+        let json = struct_to_json(&resp.object.unwrap());
+        assert_eq!(json["arn"], "arn:test:::r");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_no_canned_response_echoes_inputs() {
+        let m = MockMonitor::new("p", "s");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "name".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("my-name".into())),
+            },
+        );
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            custom: true,
+            object: Some(prost_types::Struct { fields }),
+            ..Default::default()
+        };
+        let resp = m.register_resource(req).await.unwrap();
+        let json = struct_to_json(&resp.object.unwrap());
+        assert_eq!(json["name"], "my-name");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_clone_shares_recordings() {
+        let m1 = MockMonitor::new("p", "s");
+        let m2 = m1.clone();
+        m2.register_resource(reg_req("test:t:T", "r", true)).await.unwrap();
+        assert_eq!(m1.recorded_registrations().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_invoke_returns_empty_success() {
+        let m = MockMonitor::new("p", "s");
+        let resp = m
+            .invoke(pulumirpc::ResourceInvokeRequest {
+                tok: "test:fn:fn".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.failures.is_empty());
+        assert!(resp.r#return.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_call_returns_empty_success() {
+        let m = MockMonitor::new("p", "s");
+        let resp = m
+            .call(pulumirpc::ResourceCallRequest {
+                tok: "test:m:m".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.failures.is_empty());
+        assert!(resp.r#return.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_read_resource_builds_urn_and_echoes_props() {
+        let m = MockMonitor::new("myproj", "dev");
+        let resp = m
+            .read_resource(pulumirpc::ReadResourceRequest {
+                r#type: "test:t:T".into(),
+                name: "r".into(),
+                id: "existing-id".into(),
+                properties: Some(prost_types::Struct::default()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.urn, "urn:pulumi:dev::myproj::test:t:T::r");
+        assert!(resp.properties.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_supports_feature_always_true() {
+        let m = MockMonitor::new("p", "s");
+        assert!(m.supports_feature("outputValues").await.unwrap());
+        assert!(m.supports_feature("anything").await.unwrap());
+    }
+
+    // --- MockEngine ---
+
+    #[tokio::test]
+    async fn test_mock_engine_initial_root_is_empty() {
+        let e = MockEngine::new();
+        let resp = e
+            .get_root_resource(pulumirpc::GetRootResourceRequest {})
+            .await
+            .unwrap();
+        assert!(resp.urn.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_engine_set_and_get_root_resource() {
+        let e = MockEngine::new();
+        e.set_root_resource(pulumirpc::SetRootResourceRequest {
+            urn: "urn:pulumi:dev::p::pulumi:pulumi:Stack::s".into(),
+        })
+        .await
+        .unwrap();
+        let resp = e
+            .get_root_resource(pulumirpc::GetRootResourceRequest {})
+            .await
+            .unwrap();
+        assert_eq!(resp.urn, "urn:pulumi:dev::p::pulumi:pulumi:Stack::s");
+    }
+
+    #[tokio::test]
+    async fn test_mock_engine_clone_shares_root_urn() {
+        let e1 = MockEngine::new();
+        let e2 = e1.clone();
+        e1.set_root_resource(pulumirpc::SetRootResourceRequest {
+            urn: "shared-urn".into(),
+        })
+        .await
+        .unwrap();
+        let resp = e2
+            .get_root_resource(pulumirpc::GetRootResourceRequest {})
+            .await
+            .unwrap();
+        assert_eq!(resp.urn, "shared-urn");
+    }
+
+    #[tokio::test]
+    async fn test_mock_engine_log_returns_ok() {
+        let e = MockEngine::new();
+        e.log(pulumirpc::LogRequest {
+            severity: 1,
+            message: "hello".into(),
+            urn: String::new(),
+            stream_id: 0,
+            ephemeral: false,
+        })
+        .await
+        .unwrap();
+    }
+}
