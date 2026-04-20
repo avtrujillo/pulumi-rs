@@ -29,6 +29,11 @@ pub struct EngineOptions {
     pub program: Vec<String>,
     /// Whether this is a dry run (preview).
     pub dry_run: bool,
+    /// Pulumi configuration key-value pairs passed to the program via PULUMI_CONFIG.
+    /// Keys should be fully-qualified (e.g. `"myproject:apiKey"`).
+    pub config: HashMap<String, String>,
+    /// Config keys whose values are secret (passed via PULUMI_CONFIG_SECRET_KEYS).
+    pub config_secret_keys: Vec<String>,
     /// Extra environment variables to pass to the program.
     pub env: HashMap<String, String>,
     /// Path to the checkpoint file for state persistence.
@@ -47,6 +52,8 @@ impl Default for EngineOptions {
             work_dir: PathBuf::from("."),
             program: Vec::new(),
             dry_run: false,
+            config: HashMap::new(),
+            config_secret_keys: Vec::new(),
             env: HashMap::new(),
             checkpoint_path: None,
             secrets_manager: None,
@@ -432,8 +439,10 @@ impl<P: Provider> PulumiEngine<P> {
                 .await
         });
 
-        // Build the config JSON.
-        let config_json = serde_json::to_string(&self.options.env).unwrap_or_default();
+        // Build the PULUMI_CONFIG JSON ({"key": "value", ...}).
+        let config_json = serde_json::to_string(&self.options.config).unwrap_or_default();
+        let secret_keys_json =
+            serde_json::to_string(&self.options.config_secret_keys).unwrap_or_default();
 
         // Spawn the user's program with PULUMI_* env vars.
         let program = &self.options.program;
@@ -460,7 +469,8 @@ impl<P: Provider> PulumiEngine<P> {
                 },
             )
             .env("PULUMI_PARALLEL", "-1")
-            .env("PULUMI_CONFIG", &config_json);
+            .env("PULUMI_CONFIG", &config_json)
+            .env("PULUMI_CONFIG_SECRET_KEYS", &secret_keys_json);
 
         for (k, v) in &self.options.env {
             cmd.env(k, v);

@@ -7,10 +7,12 @@
 
 ## NativeStack Parity
 
-`NativeStack` (behind `native-engine` feature) mirrors `Stack` but currently:
-- Sets `secret: false` for all output values (no secret detection)
-- Does not support config operations (`get_config`, `set_config`, etc.)
-- Does not surface engine events the way the CLI-based `Stack` does
+**DONE.** `NativeStack` now mirrors `Stack` for the core API:
+- Config operations (`get_config`, `set_config`, `get_all_config`, `remove_config`) persist to `.pulumi-rs/<stack>.config.json` and are wired into the program via `PULUMI_CONFIG`/`PULUMI_CONFIG_SECRET_KEYS`
+- `outputs()` reads directly from the checkpoint file
+- Secret detection in outputs via `is_json_secret()` was already implemented
+
+Remaining gap: structured engine events (equivalent to `--event-log` in the CLI) are not yet surfaced — `events` is always `Vec::new()` in all result types.
 
 ## Error Handling Improvements
 

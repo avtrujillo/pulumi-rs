@@ -982,6 +982,7 @@ dependencies = [
  "pulumi-engine",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
