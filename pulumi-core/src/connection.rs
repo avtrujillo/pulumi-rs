@@ -194,6 +194,35 @@ impl EngineConnection for GrpcEngine {
 // MockMonitor — for testing without a running engine
 // ---------------------------------------------------------------------------
 
+/// A recorded `invoke` call captured by [`MockMonitor`] during testing.
+#[derive(Debug, Clone)]
+pub struct InvokeRecording {
+    /// The function token (e.g. `"aws:ec2/getAmi:getAmi"`).
+    pub token: String,
+    /// The call arguments as JSON.
+    pub args: serde_json::Value,
+}
+
+/// A recorded component method call captured by [`MockMonitor`] during testing.
+#[derive(Debug, Clone)]
+pub struct MethodCallRecording {
+    /// The method token.
+    pub token: String,
+    /// The call arguments as JSON.
+    pub args: serde_json::Value,
+}
+
+/// A log message recorded by [`MockEngine`] during testing.
+#[derive(Debug, Clone)]
+pub struct LogRecord {
+    /// The severity level: 0=debug, 1=info, 2=warning, 3=error.
+    pub severity: i32,
+    /// The log message.
+    pub message: String,
+    /// The URN of the resource that logged the message, if any.
+    pub urn: String,
+}
+
 /// A resource registration captured by [`MockMonitor`] during testing.
 #[derive(Debug, Clone)]
 pub struct ResourceRegistration {
@@ -217,15 +246,21 @@ pub struct ResourceRegistration {
 ///
 /// By default, echoes inputs back as outputs and returns a synthetic URN for
 /// `register_resource`. Use [`crate::test_support::TestContextBuilder`] to
-/// configure per-resource canned responses and preview mode.
+/// configure per-resource canned responses, error injection, and preview mode.
 #[derive(Clone)]
 pub struct MockMonitor {
     project: String,
     stack: String,
     /// Canned outputs keyed by (type_token, name). Immutable after construction.
     responses: Arc<HashMap<(String, String), serde_json::Value>>,
+    /// Error messages to inject keyed by (type_token, name). Immutable after construction.
+    resource_errors: Arc<HashMap<(String, String), String>>,
     /// All register_resource calls, shared across clones.
     recordings: Arc<Mutex<Vec<ResourceRegistration>>>,
+    /// All invoke calls, shared across clones.
+    invoke_recordings: Arc<Mutex<Vec<InvokeRecording>>>,
+    /// All call (component method) calls, shared across clones.
+    call_recordings: Arc<Mutex<Vec<MethodCallRecording>>>,
     /// If true, return empty outputs (simulates pulumi preview).
     preview: bool,
 }
@@ -236,12 +271,36 @@ impl MockMonitor {
             project: project.into(),
             stack: stack.into(),
             responses: Arc::new(HashMap::new()),
+            resource_errors: Arc::new(HashMap::new()),
             recordings: Arc::new(Mutex::new(Vec::new())),
+            invoke_recordings: Arc::new(Mutex::new(Vec::new())),
+            call_recordings: Arc::new(Mutex::new(Vec::new())),
             preview: false,
         }
     }
 
-    /// Constructs a monitor with canned responses and preview mode.
+    /// Constructs a monitor with canned responses, error injection, and preview mode.
+    /// Used by [`crate::test_support::TestContextBuilder`].
+    pub(crate) fn with_options(
+        project: String,
+        stack: String,
+        responses: HashMap<(String, String), serde_json::Value>,
+        resource_errors: HashMap<(String, String), String>,
+        preview: bool,
+    ) -> Self {
+        Self {
+            project,
+            stack,
+            responses: Arc::new(responses),
+            resource_errors: Arc::new(resource_errors),
+            recordings: Arc::new(Mutex::new(Vec::new())),
+            invoke_recordings: Arc::new(Mutex::new(Vec::new())),
+            call_recordings: Arc::new(Mutex::new(Vec::new())),
+            preview,
+        }
+    }
+
+    /// Constructs a monitor with canned responses and preview mode (no error injection).
     /// Used by [`crate::test_support::TestContextBuilder`].
     pub(crate) fn with_responses(
         project: String,
@@ -249,13 +308,7 @@ impl MockMonitor {
         responses: HashMap<(String, String), serde_json::Value>,
         preview: bool,
     ) -> Self {
-        Self {
-            project,
-            stack,
-            responses: Arc::new(responses),
-            recordings: Arc::new(Mutex::new(Vec::new())),
-            preview,
-        }
+        Self::with_options(project, stack, responses, HashMap::new(), preview)
     }
 
     fn make_urn(&self, resource_type: &str, name: &str) -> String {
@@ -269,6 +322,16 @@ impl MockMonitor {
     pub fn recorded_registrations(&self) -> Vec<ResourceRegistration> {
         self.recordings.lock().unwrap().clone()
     }
+
+    /// Returns all `invoke` calls recorded so far.
+    pub fn recorded_invocations(&self) -> Vec<InvokeRecording> {
+        self.invoke_recordings.lock().unwrap().clone()
+    }
+
+    /// Returns all component method `call` calls recorded so far.
+    pub fn recorded_calls(&self) -> Vec<MethodCallRecording> {
+        self.call_recordings.lock().unwrap().clone()
+    }
 }
 
 impl MonitorConnection for MockMonitor {
@@ -276,6 +339,14 @@ impl MonitorConnection for MockMonitor {
         &self,
         req: pulumirpc::RegisterResourceRequest,
     ) -> Result<pulumirpc::RegisterResourceResponse> {
+        let key = (req.r#type.clone(), req.name.clone());
+        if let Some(err_msg) = self.resource_errors.get(&key) {
+            return Err(crate::error::Error::Custom(format!(
+                "injected error for {}/{}: {err_msg}",
+                req.r#type, req.name
+            )));
+        }
+
         let inputs_json = req
             .object
             .as_ref()
@@ -340,8 +411,17 @@ impl MonitorConnection for MockMonitor {
 
     async fn invoke(
         &self,
-        _req: pulumirpc::ResourceInvokeRequest,
+        req: pulumirpc::ResourceInvokeRequest,
     ) -> Result<pulumirpc::InvokeResponse> {
+        let args = req
+            .args
+            .as_ref()
+            .map(crate::serde::struct_to_json)
+            .unwrap_or_default();
+        self.invoke_recordings.lock().unwrap().push(InvokeRecording {
+            token: req.tok.clone(),
+            args,
+        });
         Ok(pulumirpc::InvokeResponse {
             r#return: Some(prost_types::Struct {
                 fields: Default::default(),
@@ -350,7 +430,16 @@ impl MonitorConnection for MockMonitor {
         })
     }
 
-    async fn call(&self, _req: pulumirpc::ResourceCallRequest) -> Result<pulumirpc::CallResponse> {
+    async fn call(&self, req: pulumirpc::ResourceCallRequest) -> Result<pulumirpc::CallResponse> {
+        let args = req
+            .args
+            .as_ref()
+            .map(crate::serde::struct_to_json)
+            .unwrap_or_default();
+        self.call_recordings.lock().unwrap().push(MethodCallRecording {
+            token: req.tok.clone(),
+            args,
+        });
         Ok(pulumirpc::CallResponse {
             r#return: Some(prost_types::Struct {
                 fields: Default::default(),
@@ -369,17 +458,25 @@ impl MonitorConnection for MockMonitor {
     }
 }
 
-/// A mock [`EngineConnection`] that accepts all operations as no-ops.
+/// A mock [`EngineConnection`] that records log calls and manages root resource state.
 #[derive(Clone)]
 pub struct MockEngine {
     root_urn: std::sync::Arc<tokio::sync::Mutex<String>>,
+    /// All log calls recorded, shared across clones.
+    logs: Arc<Mutex<Vec<LogRecord>>>,
 }
 
 impl MockEngine {
     pub fn new() -> Self {
         Self {
             root_urn: std::sync::Arc::new(tokio::sync::Mutex::new(String::new())),
+            logs: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns all log messages recorded so far.
+    pub fn recorded_logs(&self) -> Vec<LogRecord> {
+        self.logs.lock().unwrap().clone()
     }
 }
 
@@ -390,7 +487,12 @@ impl Default for MockEngine {
 }
 
 impl EngineConnection for MockEngine {
-    async fn log(&self, _req: pulumirpc::LogRequest) -> Result<()> {
+    async fn log(&self, req: pulumirpc::LogRequest) -> Result<()> {
+        self.logs.lock().unwrap().push(LogRecord {
+            severity: req.severity,
+            message: req.message,
+            urn: req.urn,
+        });
         Ok(())
     }
 
@@ -657,16 +759,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mock_engine_log_returns_ok() {
+    async fn test_mock_engine_log_records_message() {
         let e = MockEngine::new();
         e.log(pulumirpc::LogRequest {
+            severity: 3,
+            message: "something went wrong".into(),
+            urn: "urn:pulumi:dev::p::pkg:mod:R::r".into(),
+            stream_id: 0,
+            ephemeral: false,
+        })
+        .await
+        .unwrap();
+        let logs = e.recorded_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].severity, 3);
+        assert_eq!(logs[0].message, "something went wrong");
+        assert_eq!(logs[0].urn, "urn:pulumi:dev::p::pkg:mod:R::r");
+    }
+
+    #[tokio::test]
+    async fn test_mock_engine_clone_shares_logs() {
+        let e1 = MockEngine::new();
+        let e2 = e1.clone();
+        e1.log(pulumirpc::LogRequest {
             severity: 1,
-            message: "hello".into(),
+            message: "msg".into(),
             urn: String::new(),
             stream_id: 0,
             ephemeral: false,
         })
         .await
         .unwrap();
+        assert_eq!(e2.recorded_logs().len(), 1);
+    }
+
+    // --- MockMonitor invoke/call recording ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_invoke_records_token_and_args() {
+        let m = MockMonitor::new("p", "s");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "filters".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("x86_64".into())),
+            },
+        );
+        m.invoke(pulumirpc::ResourceInvokeRequest {
+            tok: "aws:ec2/getAmi:getAmi".into(),
+            args: Some(prost_types::Struct { fields }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let invocations = m.recorded_invocations();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].token, "aws:ec2/getAmi:getAmi");
+        assert_eq!(invocations[0].args["filters"], "x86_64");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_call_records_token() {
+        let m = MockMonitor::new("p", "s");
+        m.call(pulumirpc::ResourceCallRequest {
+            tok: "my:component:MyMethod".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let calls = m.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].token, "my:component:MyMethod");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_invoke_clone_shares_recordings() {
+        let m1 = MockMonitor::new("p", "s");
+        let m2 = m1.clone();
+        m2.invoke(pulumirpc::ResourceInvokeRequest {
+            tok: "aws:fn:fn".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(m1.recorded_invocations().len(), 1);
+    }
+
+    // --- Error injection ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_injected_error_returned() {
+        let mut errors = HashMap::new();
+        errors.insert(("test:t:T".into(), "bad-res".into()), "simulated failure".into());
+        let m = MockMonitor::with_options("p".into(), "s".into(), HashMap::new(), errors, false);
+        let err = m
+            .register_resource(reg_req("test:t:T", "bad-res", true))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("simulated failure"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_injected_error_only_for_matching_resource() {
+        let mut errors = HashMap::new();
+        errors.insert(("test:t:T".into(), "bad-res".into()), "fail".into());
+        let m = MockMonitor::with_options("p".into(), "s".into(), HashMap::new(), errors, false);
+        // Different name — should succeed
+        let resp = m.register_resource(reg_req("test:t:T", "good-res", true)).await;
+        assert!(resp.is_ok());
     }
 }

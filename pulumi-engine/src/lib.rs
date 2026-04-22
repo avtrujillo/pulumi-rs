@@ -42,6 +42,9 @@ pub mod state;
 
 pub(crate) use pulumi_core::proto::pulumirpc;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 pub use error::{Error, Result};
 pub use orchestrator::{DestroyResult, EngineOptions, PulumiEngine, RefreshResult, UpResult};
 pub use provider::{GrpcProvider, Provider, ProviderManager};

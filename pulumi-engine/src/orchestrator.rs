@@ -733,6 +733,149 @@ fn format_refresh_summary(diffs: &[RefreshDiff]) -> String {
 mod tests {
     use super::*;
     use crate::diff::{RefreshAction, RefreshDiff};
+    use crate::events::EngineEvent;
+    use crate::provider::ProviderManager;
+    use crate::state::ResourceState;
+    use crate::test_utils::MockProvider;
+
+    fn make_engine(dir: &std::path::Path) -> PulumiEngine<MockProvider> {
+        let opts = EngineOptions {
+            project: "test-proj".into(),
+            stack: "dev".into(),
+            work_dir: dir.to_path_buf(),
+            ..Default::default()
+        };
+        PulumiEngine::with_providers(opts, ProviderManager::new())
+    }
+
+    fn sample_resource(name: &str, custom: bool) -> ResourceState {
+        ResourceState {
+            urn: format!("urn:pulumi:dev::test-proj::pkg:mod:Res::{name}"),
+            id: if custom { format!("id-{name}") } else { String::new() },
+            resource_type: "pkg:mod:Res".into(),
+            name: name.into(),
+            custom,
+            parent: String::new(),
+            inputs: serde_json::json!({}),
+            outputs: serde_json::json!({}),
+            dependencies: vec![],
+            secret_properties: vec![],
+            refresh_before_update: false,
+        }
+    }
+
+    fn save_checkpoint(dir: &std::path::Path, resources: Vec<ResourceState>) {
+        let cp = Checkpoint {
+            version: 1,
+            project: "test-proj".into(),
+            stack: "dev".into(),
+            resources,
+            outputs: serde_json::json!({}),
+            secrets_provider: None,
+        };
+        let path = dir.join(".pulumi-rs").join("dev.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        cp.save(&path).unwrap();
+    }
+
+    // --- destroy ---
+
+    #[tokio::test]
+    async fn destroy_no_checkpoint_returns_no_resources_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = make_engine(dir.path());
+        let result = engine.destroy().await.unwrap();
+        assert!(result.stdout.contains("No resources"));
+        // Summary event should still be emitted.
+        assert!(result.events.iter().any(|e| matches!(e, EngineEvent::Summary { .. })));
+    }
+
+    #[tokio::test]
+    async fn destroy_component_only_checkpoint_clears_state() {
+        let dir = tempfile::tempdir().unwrap();
+        save_checkpoint(dir.path(), vec![sample_resource("comp", false)]);
+
+        let engine = make_engine(dir.path());
+        let result = engine.destroy().await.unwrap();
+        assert!(result.stdout.contains("remove"));
+
+        let cp_path = dir.path().join(".pulumi-rs").join("dev.json");
+        let loaded = Checkpoint::load(&cp_path).unwrap().unwrap();
+        assert!(loaded.resources.is_empty(), "checkpoint should be cleared after destroy");
+    }
+
+    #[tokio::test]
+    async fn destroy_custom_resource_checkpoint_clears_state() {
+        let dir = tempfile::tempdir().unwrap();
+        save_checkpoint(dir.path(), vec![sample_resource("bucket", true)]);
+
+        let engine = make_engine(dir.path());
+        let result = engine.destroy().await.unwrap();
+        assert!(result.stdout.contains("Destroyed"));
+
+        let cp_path = dir.path().join(".pulumi-rs").join("dev.json");
+        let loaded = Checkpoint::load(&cp_path).unwrap().unwrap();
+        assert!(loaded.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn destroy_emits_resource_step_events() {
+        let dir = tempfile::tempdir().unwrap();
+        save_checkpoint(
+            dir.path(),
+            vec![sample_resource("a", false), sample_resource("b", true)],
+        );
+
+        let engine = make_engine(dir.path());
+        let result = engine.destroy().await.unwrap();
+
+        let delete_events: Vec<_> = result
+            .events
+            .iter()
+            .filter(|e| matches!(e, EngineEvent::ResourceStep { op, .. } if op == "delete"))
+            .collect();
+        assert_eq!(delete_events.len(), 2);
+    }
+
+    // --- refresh ---
+
+    #[tokio::test]
+    async fn refresh_no_checkpoint_returns_empty_diffs() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = make_engine(dir.path());
+        let result = engine.refresh().await.unwrap();
+        assert!(result.diffs.is_empty());
+        assert!(result.stdout.contains("No checkpoint"));
+    }
+
+    #[tokio::test]
+    async fn refresh_component_resource_skips_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        save_checkpoint(dir.path(), vec![sample_resource("comp", false)]);
+
+        let engine = make_engine(dir.path());
+        let result = engine.refresh().await.unwrap();
+        // Component resource has no provider read; diffs list is empty.
+        assert!(result.diffs.is_empty());
+    }
+
+    // --- up (error cases) ---
+
+    #[tokio::test]
+    async fn up_empty_program_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = make_engine(dir.path());
+        let err = engine.up().await.unwrap_err();
+        assert!(err.to_string().contains("no program"));
+    }
+
+    #[tokio::test]
+    async fn preview_empty_program_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = make_engine(dir.path());
+        let err = engine.preview().await.unwrap_err();
+        assert!(err.to_string().contains("no program"));
+    }
 
     #[test]
     fn test_format_summary_empty() {

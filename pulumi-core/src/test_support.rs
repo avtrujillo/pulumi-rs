@@ -27,7 +27,9 @@
 
 use std::collections::HashMap;
 
-use crate::connection::{MockEngine, MockMonitor, ResourceRegistration};
+use crate::connection::{
+    InvokeRecording, LogRecord, MockEngine, MockMonitor, ResourceRegistration,
+};
 use crate::context::{Context, Settings};
 use crate::resource::Resource;
 
@@ -39,6 +41,7 @@ pub struct TestContextBuilder {
     config: HashMap<String, String>,
     config_secret_keys: Vec<String>,
     responses: HashMap<(String, String), serde_json::Value>,
+    errors: HashMap<(String, String), String>,
 }
 
 impl Default for TestContextBuilder {
@@ -56,6 +59,7 @@ impl TestContextBuilder {
             config: HashMap::new(),
             config_secret_keys: Vec::new(),
             responses: HashMap::new(),
+            errors: HashMap::new(),
         }
     }
 
@@ -111,6 +115,21 @@ impl TestContextBuilder {
         self
     }
 
+    /// Injects an error for a specific resource type and name.
+    ///
+    /// When the program registers a resource of type `R` named `name`, the mock
+    /// monitor returns an error containing `message`. Use this to test error-handling
+    /// paths in your Pulumi programs.
+    pub fn with_resource_error<R: Resource>(
+        mut self,
+        name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        self.errors
+            .insert((R::TYPE_TOKEN.to_string(), name.into()), message.into());
+        self
+    }
+
     /// Builds the [`TestContext`].
     pub fn build(self) -> TestContext {
         let settings = Settings {
@@ -124,15 +143,16 @@ impl TestContextBuilder {
             config: self.config,
             config_secret_keys: self.config_secret_keys,
         };
-        let monitor = MockMonitor::with_responses(
+        let monitor = MockMonitor::with_options(
             self.project,
             self.stack,
             self.responses,
+            self.errors,
             self.preview,
         );
         let engine = MockEngine::new();
-        let ctx = Context::for_testing(monitor.clone(), engine, settings);
-        TestContext { ctx, monitor }
+        let ctx = Context::for_testing(monitor.clone(), engine.clone(), settings);
+        TestContext { ctx, monitor, engine }
     }
 }
 
@@ -144,6 +164,7 @@ impl TestContextBuilder {
 pub struct TestContext {
     ctx: Context<MockMonitor, MockEngine>,
     monitor: MockMonitor,
+    engine: MockEngine,
 }
 
 impl TestContext {
@@ -160,6 +181,16 @@ impl TestContext {
     /// Returns all `register_resource` calls made against this context so far.
     pub fn registered_resources(&self) -> Vec<ResourceRegistration> {
         self.monitor.recorded_registrations()
+    }
+
+    /// Returns all `invoke` (provider function) calls made against this context so far.
+    pub fn invoked_functions(&self) -> Vec<InvokeRecording> {
+        self.monitor.recorded_invocations()
+    }
+
+    /// Returns all log messages sent to the engine from this context so far.
+    pub fn recorded_logs(&self) -> Vec<LogRecord> {
+        self.engine.recorded_logs()
     }
 }
 
@@ -362,5 +393,48 @@ mod tests {
         let test_ctx = TestContext::builder().build();
         assert_eq!(test_ctx.context().project(), "test");
         assert_eq!(test_ctx.context().stack(), "dev");
+    }
+
+    #[tokio::test]
+    async fn test_with_resource_error_propagates() {
+        let test_ctx = TestContextBuilder::new()
+            .with_resource_error::<TestBucket>("bad-bucket", "simulated provider failure")
+            .build();
+
+        let result: crate::error::Result<RegisteredResource<TestBucket>> = ResourceBuilder::new(
+            test_ctx.context(),
+            "bad-bucket",
+            TestBucketArgs { name: "x".into() },
+        )
+        .await;
+        let Err(err) = result else { panic!("expected an error") };
+        assert!(err.to_string().contains("simulated provider failure"));
+    }
+
+    #[tokio::test]
+    async fn test_with_resource_error_only_affects_named_resource() {
+        let test_ctx = TestContextBuilder::new()
+            .with_resource_error::<TestBucket>("bad-bucket", "fail")
+            .build();
+
+        // Different name — should succeed
+        let result: crate::error::Result<RegisteredResource<TestBucket>> = ResourceBuilder::new(
+            test_ctx.context(),
+            "good-bucket",
+            TestBucketArgs { name: "x".into() },
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_recorded_logs_captures_engine_log() {
+        use crate::log;
+        let test_ctx = TestContextBuilder::new().build();
+        log::info(test_ctx.context(), "test message", None).await.unwrap();
+        let logs = test_ctx.recorded_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].message, "test message");
+        assert_eq!(logs[0].severity, 1); // INFO
     }
 }
