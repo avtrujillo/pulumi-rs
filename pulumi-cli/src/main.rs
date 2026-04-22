@@ -3,7 +3,9 @@
 //! A Rust-native CLI for Pulumi stack operations, built on `pulumi-automation`.
 
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use pulumi_automation::config::ConfigValue;
+use pulumi_automation::event::EngineEvent;
 use pulumi_automation::LocalWorkspace;
 
 #[derive(Parser)]
@@ -30,6 +32,12 @@ enum Commands {
         /// Emit output as JSON.
         #[arg(long)]
         json: bool,
+        /// Use the native Rust engine instead of the Pulumi CLI.
+        #[arg(long)]
+        native: bool,
+        /// Program binary to run (required with --native).
+        #[arg(long)]
+        program: Option<String>,
     },
     /// Show a preview of pending changes.
     Preview {
@@ -39,6 +47,12 @@ enum Commands {
         /// Emit output as JSON.
         #[arg(long)]
         json: bool,
+        /// Use the native Rust engine instead of the Pulumi CLI.
+        #[arg(long)]
+        native: bool,
+        /// Program binary to run (required with --native).
+        #[arg(long)]
+        program: Option<String>,
     },
     /// Destroy all resources in a stack.
     Destroy {
@@ -48,6 +62,12 @@ enum Commands {
         /// Emit output as JSON.
         #[arg(long)]
         json: bool,
+        /// Use the native Rust engine instead of the Pulumi CLI.
+        #[arg(long)]
+        native: bool,
+        /// Program binary to run (required with --native).
+        #[arg(long)]
+        program: Option<String>,
     },
     /// Refresh stack state from the cloud.
     Refresh {
@@ -57,6 +77,12 @@ enum Commands {
         /// Emit output as JSON.
         #[arg(long)]
         json: bool,
+        /// Use the native Rust engine instead of the Pulumi CLI.
+        #[arg(long)]
+        native: bool,
+        /// Program binary to run (required with --native).
+        #[arg(long)]
+        program: Option<String>,
     },
     /// Manage stacks.
     Stack {
@@ -67,6 +93,23 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
+    },
+    /// Show the currently logged-in Pulumi user.
+    Whoami {
+        /// Emit output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch log entries for a stack.
+    Logs {
+        /// The stack to fetch logs for.
+        #[arg(short, long)]
+        stack: String,
+    },
+    /// Manage Pulumi plugins.
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
     },
 }
 
@@ -159,18 +202,120 @@ enum ConfigCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum PluginCommands {
+    /// List installed plugins.
+    Ls {
+        /// Emit output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a plugin.
+    Install {
+        /// Plugin kind (e.g. `resource`).
+        kind: String,
+        /// Plugin name (e.g. `aws`).
+        name: String,
+        /// Plugin version (e.g. `6.0.0`).
+        version: String,
+    },
+    /// Remove a plugin.
+    Rm {
+        /// Plugin kind (e.g. `resource`).
+        kind: String,
+        /// Plugin name (e.g. `aws`).
+        name: String,
+        /// Plugin version to remove (removes all versions if omitted).
+        version: Option<String>,
+    },
+}
+
+/// Resolve the program path for native engine commands, exiting with an error if not provided.
+#[cfg(feature = "native-engine")]
+fn require_program(program: Option<String>) -> String {
+    program.unwrap_or_else(|| {
+        eprintln!("{} --program is required when using --native", "Error:".red().bold());
+        std::process::exit(1);
+    })
+}
+
+/// Format engine events as a human-readable diff for preview output.
+fn format_diff_events(events: &[EngineEvent]) -> String {
+    let mut lines = Vec::new();
+    for ev in events {
+        if let Some(rpe) = &ev.resource_pre_event {
+            let md = &rpe.metadata;
+            if md.op == "same" {
+                continue;
+            }
+            let op_label = match md.op.as_str() {
+                "create" => format!("{}", "+ create".green()),
+                "delete" | "delete-replaced" => format!("{}", "- delete".red()),
+                "update" | "replace" => format!("{}", "~ update".yellow()),
+                other => format!("? {other}"),
+            };
+            let name = md.urn.rsplit("::").next().unwrap_or(md.urn.as_str());
+            lines.push(format!(
+                "  {op_label}  {}  {name}",
+                md.resource_type.cyan()
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Print an operation result, optionally in JSON, applying diff formatting for events.
+fn print_result_stdout(stdout: &str, stderr: &str, json_mode: bool) {
+    if json_mode {
+        return; // caller handles JSON output
+    }
+    if !stdout.is_empty() {
+        println!("{stdout}");
+    }
+    if !stderr.is_empty() {
+        eprintln!("{stderr}");
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let ws = LocalWorkspace::new(&cli.cwd);
 
     let result: std::result::Result<(), pulumi_automation::error::Error> = match cli.command {
-        Commands::Up { stack, json } => {
-            let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                eprintln!("Error selecting stack: {e}");
-                std::process::exit(1);
-            });
-            match s.up().await {
+        Commands::Up { stack, json, native, program } => {
+            // When --native is requested but feature not compiled, exit immediately.
+            #[cfg(not(feature = "native-engine"))]
+            let _ = &program; // not used without native-engine feature
+            if native {
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    eprintln!(
+                        "{} --native requires the native-engine feature (recompile with --features native-engine)",
+                        "Error:".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            let result = if native {
+                #[cfg(feature = "native-engine")]
+                {
+                    let prog = require_program(program);
+                    let ns = ws.native_stack(&stack, vec![prog]);
+                    ns.up().await
+                }
+                #[cfg(not(feature = "native-engine"))]
+                unreachable!()
+            } else {
+                let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
+                    std::process::exit(1);
+                });
+                s.up().await
+            };
+
+            match result {
                 Ok(r) => {
                     if json {
                         let out = serde_json::json!({
@@ -180,22 +325,45 @@ async fn main() {
                         });
                         println!("{}", serde_json::to_string_pretty(&out).unwrap());
                     } else {
-                        println!("{}", r.stdout);
-                        if !r.stderr.is_empty() {
-                            eprintln!("{}", r.stderr);
-                        }
+                        print_result_stdout(&r.stdout, &r.stderr, false);
                     }
                     Ok(())
                 }
                 Err(e) => Err(e),
             }
         }
-        Commands::Preview { stack, json } => {
-            let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                eprintln!("Error selecting stack: {e}");
-                std::process::exit(1);
-            });
-            match s.preview().await {
+        Commands::Preview { stack, json, native, program } => {
+            #[cfg(not(feature = "native-engine"))]
+            let _ = &program;
+            if native {
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    eprintln!(
+                        "{} --native requires the native-engine feature",
+                        "Error:".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            let result = if native {
+                #[cfg(feature = "native-engine")]
+                {
+                    let prog = require_program(program);
+                    let ns = ws.native_stack(&stack, vec![prog]);
+                    ns.preview().await
+                }
+                #[cfg(not(feature = "native-engine"))]
+                unreachable!()
+            } else {
+                let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
+                    std::process::exit(1);
+                });
+                s.preview().await
+            };
+
+            match result {
                 Ok(r) => {
                     if json {
                         let out = serde_json::json!({
@@ -204,9 +372,10 @@ async fn main() {
                         });
                         println!("{}", serde_json::to_string_pretty(&out).unwrap());
                     } else {
-                        println!("{}", r.stdout);
-                        if !r.stderr.is_empty() {
-                            eprintln!("{}", r.stderr);
+                        print_result_stdout(&r.stdout, &r.stderr, false);
+                        let diff = format_diff_events(&r.events);
+                        if !diff.is_empty() {
+                            println!("\nPending changes:\n{diff}");
                         }
                     }
                     Ok(())
@@ -214,12 +383,38 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
-        Commands::Destroy { stack, json } => {
-            let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                eprintln!("Error selecting stack: {e}");
-                std::process::exit(1);
-            });
-            match s.destroy().await {
+        Commands::Destroy { stack, json, native, program } => {
+            #[cfg(not(feature = "native-engine"))]
+            let _ = &program;
+            if native {
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    eprintln!(
+                        "{} --native requires the native-engine feature",
+                        "Error:".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            let result = if native {
+                #[cfg(feature = "native-engine")]
+                {
+                    let prog = require_program(program);
+                    let ns = ws.native_stack(&stack, vec![prog]);
+                    ns.destroy().await
+                }
+                #[cfg(not(feature = "native-engine"))]
+                unreachable!()
+            } else {
+                let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
+                    std::process::exit(1);
+                });
+                s.destroy().await
+            };
+
+            match result {
                 Ok(r) => {
                     if json {
                         let out = serde_json::json!({
@@ -228,22 +423,45 @@ async fn main() {
                         });
                         println!("{}", serde_json::to_string_pretty(&out).unwrap());
                     } else {
-                        println!("{}", r.stdout);
-                        if !r.stderr.is_empty() {
-                            eprintln!("{}", r.stderr);
-                        }
+                        print_result_stdout(&r.stdout, &r.stderr, false);
                     }
                     Ok(())
                 }
                 Err(e) => Err(e),
             }
         }
-        Commands::Refresh { stack, json } => {
-            let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                eprintln!("Error selecting stack: {e}");
-                std::process::exit(1);
-            });
-            match s.refresh().await {
+        Commands::Refresh { stack, json, native, program } => {
+            #[cfg(not(feature = "native-engine"))]
+            let _ = &program;
+            if native {
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    eprintln!(
+                        "{} --native requires the native-engine feature",
+                        "Error:".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            let result = if native {
+                #[cfg(feature = "native-engine")]
+                {
+                    let prog = require_program(program);
+                    let ns = ws.native_stack(&stack, vec![prog]);
+                    ns.refresh().await
+                }
+                #[cfg(not(feature = "native-engine"))]
+                unreachable!()
+            } else {
+                let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
+                    std::process::exit(1);
+                });
+                s.refresh().await
+            };
+
+            match result {
                 Ok(r) => {
                     if json {
                         let out = serde_json::json!({
@@ -252,10 +470,7 @@ async fn main() {
                         });
                         println!("{}", serde_json::to_string_pretty(&out).unwrap());
                     } else {
-                        println!("{}", r.stdout);
-                        if !r.stderr.is_empty() {
-                            eprintln!("{}", r.stderr);
-                        }
+                        print_result_stdout(&r.stdout, &r.stderr, false);
                     }
                     Ok(())
                 }
@@ -264,16 +479,13 @@ async fn main() {
         }
         Commands::Stack { command } => match command {
             StackCommands::Init { name } => ws.create_stack(&name).await.map(|_| ()).map_err(|e| {
-                eprintln!("Error creating stack: {e}");
+                eprintln!("{} creating stack: {e}", "Error:".red().bold());
                 e
             }),
             StackCommands::Ls { json } => match ws.list_stacks().await {
                 Ok(stacks) => {
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&stacks).unwrap()
-                        );
+                        println!("{}", serde_json::to_string_pretty(&stacks).unwrap());
                     } else {
                         for s in &stacks {
                             let current = if s.current { " *" } else { "" };
@@ -287,13 +499,13 @@ async fn main() {
             StackCommands::Rm { name, force } => ws.remove_stack(&name, force).await,
             StackCommands::Output { stack } => {
                 let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                    eprintln!("Error selecting stack: {e}");
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
                     std::process::exit(1);
                 });
                 match s.outputs().await {
                     Ok(outputs) => {
-                        let json = serde_json::to_string_pretty(&outputs)
-                            .expect("failed to serialize outputs");
+                        let json =
+                            serde_json::to_string_pretty(&outputs).expect("failed to serialize outputs");
                         println!("{json}");
                         Ok(())
                     }
@@ -302,15 +514,12 @@ async fn main() {
             }
             StackCommands::Export { stack } => {
                 let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                    eprintln!("Error selecting stack: {e}");
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
                     std::process::exit(1);
                 });
                 match s.export_state().await {
                     Ok(state) => {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&state).unwrap()
-                        );
+                        println!("{}", serde_json::to_string_pretty(&state).unwrap());
                         Ok(())
                     }
                     Err(e) => Err(e),
@@ -318,19 +527,19 @@ async fn main() {
             }
             StackCommands::Import { stack, file } => {
                 let s = ws.select_stack(&stack).await.unwrap_or_else(|e| {
-                    eprintln!("Error selecting stack: {e}");
+                    eprintln!("{} selecting stack: {e}", "Error:".red().bold());
                     std::process::exit(1);
                 });
                 let content = match file {
                     Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                        eprintln!("Error reading file '{path}': {e}");
+                        eprintln!("{} reading file '{path}': {e}", "Error:".red().bold());
                         std::process::exit(1);
                     }),
                     None => {
                         use std::io::Read;
                         let mut buf = String::new();
                         std::io::stdin().read_to_string(&mut buf).unwrap_or_else(|e| {
-                            eprintln!("Error reading stdin: {e}");
+                            eprintln!("{} reading stdin: {e}", "Error:".red().bold());
                             std::process::exit(1);
                         });
                         buf
@@ -338,7 +547,7 @@ async fn main() {
                 };
                 let state: serde_json::Value =
                     serde_json::from_str(&content).unwrap_or_else(|e| {
-                        eprintln!("Error parsing JSON: {e}");
+                        eprintln!("{} parsing JSON: {e}", "Error:".red().bold());
                         std::process::exit(1);
                     });
                 s.import_state(&state).await
@@ -349,10 +558,7 @@ async fn main() {
                 match ws.get_config(&stack, &key).await {
                     Ok(cv) => {
                         if json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&cv).unwrap()
-                            );
+                            println!("{}", serde_json::to_string_pretty(&cv).unwrap());
                         } else {
                             println!("{}", cv.value);
                         }
@@ -361,12 +567,7 @@ async fn main() {
                     Err(e) => Err(e),
                 }
             }
-            ConfigCommands::Set {
-                key,
-                value,
-                stack,
-                secret,
-            } => {
+            ConfigCommands::Set { key, value, stack, secret } => {
                 let cv = if secret {
                     ConfigValue::secret(value)
                 } else {
@@ -378,10 +579,7 @@ async fn main() {
             ConfigCommands::Ls { stack, json } => match ws.get_all_config(&stack).await {
                 Ok(config) => {
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&config).unwrap()
-                        );
+                        println!("{}", serde_json::to_string_pretty(&config).unwrap());
                     } else {
                         for (key, cv) in &config {
                             let secret_marker = if cv.secret { " [secret]" } else { "" };
@@ -393,10 +591,55 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
+        Commands::Whoami { json } => match ws.whoami().await {
+            Ok(result) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    println!("user: {}", result.user);
+                    if let Some(url) = &result.url {
+                        println!("url:  {url}");
+                    }
+                    if !result.organizations.is_empty() {
+                        println!("orgs: {}", result.organizations.join(", "));
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
+        Commands::Logs { stack } => match ws.logs(&stack).await {
+            Ok(output) => {
+                print!("{output}");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
+        Commands::Plugin { command } => match command {
+            PluginCommands::Ls { json } => match ws.list_plugins().await {
+                Ok(plugins) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&plugins).unwrap());
+                    } else {
+                        for p in &plugins {
+                            println!("{} {} v{}", p.kind, p.name, p.version);
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
+            PluginCommands::Install { kind, name, version } => {
+                ws.install_plugin(&kind, &name, &version).await
+            }
+            PluginCommands::Rm { kind, name, version } => {
+                ws.remove_plugin(&kind, &name, version.as_deref()).await
+            }
+        },
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        eprintln!("{} {e}", "Error:".red().bold());
         std::process::exit(1);
     }
 }
@@ -410,28 +653,55 @@ mod tests {
     #[test]
     fn test_up_command() {
         let cli = Cli::parse_from(["pulumi-rs", "up", "--stack", "dev"]);
-        assert!(matches!(cli.command, Commands::Up { stack, json: false } if stack == "dev"));
+        assert!(
+            matches!(cli.command, Commands::Up { stack, json: false, native: false, program: None } if stack == "dev")
+        );
     }
 
     #[test]
     fn test_up_command_json() {
         let cli = Cli::parse_from(["pulumi-rs", "up", "--stack", "dev", "--json"]);
-        assert!(matches!(cli.command, Commands::Up { stack, json: true } if stack == "dev"));
+        assert!(
+            matches!(cli.command, Commands::Up { stack, json: true, native: false, .. } if stack == "dev")
+        );
+    }
+
+    #[test]
+    fn test_up_native_flag() {
+        let cli = Cli::parse_from([
+            "pulumi-rs", "up", "--stack", "dev", "--native", "--program", "./my-prog",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Commands::Up { stack, native: true, program: Some(p), .. }
+            if stack == "dev" && p == "./my-prog"
+        ));
     }
 
     #[test]
     fn test_preview_command() {
         let cli = Cli::parse_from(["pulumi-rs", "preview", "--stack", "staging"]);
         assert!(
-            matches!(cli.command, Commands::Preview { stack, json: false } if stack == "staging")
+            matches!(cli.command, Commands::Preview { stack, json: false, native: false, .. } if stack == "staging")
         );
+    }
+
+    #[test]
+    fn test_preview_native_flag() {
+        let cli = Cli::parse_from([
+            "pulumi-rs", "preview", "--stack", "dev", "--native", "--program", "./bin",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Commands::Preview { native: true, program: Some(_), .. }
+        ));
     }
 
     #[test]
     fn test_destroy_command() {
         let cli = Cli::parse_from(["pulumi-rs", "destroy", "--stack", "dev"]);
         assert!(
-            matches!(cli.command, Commands::Destroy { stack, json: false } if stack == "dev")
+            matches!(cli.command, Commands::Destroy { stack, json: false, native: false, .. } if stack == "dev")
         );
     }
 
@@ -439,7 +709,7 @@ mod tests {
     fn test_refresh_command() {
         let cli = Cli::parse_from(["pulumi-rs", "refresh", "--stack", "dev"]);
         assert!(
-            matches!(cli.command, Commands::Refresh { stack, json: false } if stack == "dev")
+            matches!(cli.command, Commands::Refresh { stack, json: false, native: false, .. } if stack == "dev")
         );
     }
 
@@ -448,9 +718,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "init", "prod"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Init { name }
-            } if name == "prod"
+            Commands::Stack { command: StackCommands::Init { name } } if name == "prod"
         ));
     }
 
@@ -459,9 +727,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "ls"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Ls { json: false }
-            }
+            Commands::Stack { command: StackCommands::Ls { json: false } }
         ));
     }
 
@@ -470,9 +736,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "ls", "--json"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Ls { json: true }
-            }
+            Commands::Stack { command: StackCommands::Ls { json: true } }
         ));
     }
 
@@ -481,9 +745,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "rm", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Rm { name, force: false }
-            } if name == "dev"
+            Commands::Stack { command: StackCommands::Rm { name, force: false } } if name == "dev"
         ));
     }
 
@@ -492,9 +754,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "rm", "dev", "--force"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Rm { name, force: true }
-            } if name == "dev"
+            Commands::Stack { command: StackCommands::Rm { name, force: true } } if name == "dev"
         ));
     }
 
@@ -503,9 +763,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "output", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Output { stack }
-            } if stack == "dev"
+            Commands::Stack { command: StackCommands::Output { stack } } if stack == "dev"
         ));
     }
 
@@ -514,9 +772,7 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "export", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Export { stack }
-            } if stack == "dev"
+            Commands::Stack { command: StackCommands::Export { stack } } if stack == "dev"
         ));
     }
 
@@ -525,39 +781,30 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "stack", "import", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Import { stack, file: None }
-            } if stack == "dev"
+            Commands::Stack { command: StackCommands::Import { stack, file: None } } if stack == "dev"
         ));
     }
 
     #[test]
     fn test_stack_import_with_file() {
         let cli = Cli::parse_from([
-            "pulumi-rs",
-            "stack",
-            "import",
-            "--stack",
-            "dev",
-            "--file",
-            "state.json",
+            "pulumi-rs", "stack", "import", "--stack", "dev", "--file", "state.json",
         ]);
         assert!(matches!(
             cli.command,
-            Commands::Stack {
-                command: StackCommands::Import { stack, file: Some(f) }
-            } if stack == "dev" && f == "state.json"
+            Commands::Stack { command: StackCommands::Import { stack, file: Some(f) } }
+            if stack == "dev" && f == "state.json"
         ));
     }
 
     #[test]
     fn test_config_get() {
-        let cli = Cli::parse_from(["pulumi-rs", "config", "get", "aws:region", "--stack", "dev"]);
+        let cli =
+            Cli::parse_from(["pulumi-rs", "config", "get", "aws:region", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Config {
-                command: ConfigCommands::Get { key, stack, json: false }
-            } if key == "aws:region" && stack == "dev"
+            Commands::Config { command: ConfigCommands::Get { key, stack, json: false } }
+            if key == "aws:region" && stack == "dev"
         ));
     }
 
@@ -568,22 +815,15 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Commands::Config {
-                command: ConfigCommands::Get { key, stack, json: true }
-            } if key == "aws:region" && stack == "dev"
+            Commands::Config { command: ConfigCommands::Get { key, stack, json: true } }
+            if key == "aws:region" && stack == "dev"
         ));
     }
 
     #[test]
     fn test_config_set() {
         let cli = Cli::parse_from([
-            "pulumi-rs",
-            "config",
-            "set",
-            "aws:region",
-            "us-east-1",
-            "--stack",
-            "dev",
+            "pulumi-rs", "config", "set", "aws:region", "us-east-1", "--stack", "dev",
         ]);
         assert!(matches!(
             cli.command,
@@ -596,14 +836,7 @@ mod tests {
     #[test]
     fn test_config_set_secret() {
         let cli = Cli::parse_from([
-            "pulumi-rs",
-            "config",
-            "set",
-            "db:password",
-            "hunter2",
-            "--stack",
-            "dev",
-            "--secret",
+            "pulumi-rs", "config", "set", "db:password", "hunter2", "--stack", "dev", "--secret",
         ]);
         assert!(matches!(
             cli.command,
@@ -615,14 +848,12 @@ mod tests {
 
     #[test]
     fn test_config_rm() {
-        let cli = Cli::parse_from([
-            "pulumi-rs", "config", "rm", "aws:region", "--stack", "dev",
-        ]);
+        let cli =
+            Cli::parse_from(["pulumi-rs", "config", "rm", "aws:region", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Config {
-                command: ConfigCommands::Rm { key, stack }
-            } if key == "aws:region" && stack == "dev"
+            Commands::Config { command: ConfigCommands::Rm { key, stack } }
+            if key == "aws:region" && stack == "dev"
         ));
     }
 
@@ -631,9 +862,8 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "config", "ls", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Config {
-                command: ConfigCommands::Ls { stack, json: false }
-            } if stack == "dev"
+            Commands::Config { command: ConfigCommands::Ls { stack, json: false } }
+            if stack == "dev"
         ));
     }
 
@@ -642,9 +872,79 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "config", "ls", "--stack", "dev", "--json"]);
         assert!(matches!(
             cli.command,
-            Commands::Config {
-                command: ConfigCommands::Ls { stack, json: true }
-            } if stack == "dev"
+            Commands::Config { command: ConfigCommands::Ls { stack, json: true } }
+            if stack == "dev"
+        ));
+    }
+
+    #[test]
+    fn test_whoami_command() {
+        let cli = Cli::parse_from(["pulumi-rs", "whoami"]);
+        assert!(matches!(cli.command, Commands::Whoami { json: false }));
+    }
+
+    #[test]
+    fn test_whoami_json() {
+        let cli = Cli::parse_from(["pulumi-rs", "whoami", "--json"]);
+        assert!(matches!(cli.command, Commands::Whoami { json: true }));
+    }
+
+    #[test]
+    fn test_logs_command() {
+        let cli = Cli::parse_from(["pulumi-rs", "logs", "--stack", "dev"]);
+        assert!(matches!(cli.command, Commands::Logs { stack } if stack == "dev"));
+    }
+
+    #[test]
+    fn test_plugin_ls() {
+        let cli = Cli::parse_from(["pulumi-rs", "plugin", "ls"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Plugin { command: PluginCommands::Ls { json: false } }
+        ));
+    }
+
+    #[test]
+    fn test_plugin_ls_json() {
+        let cli = Cli::parse_from(["pulumi-rs", "plugin", "ls", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Plugin { command: PluginCommands::Ls { json: true } }
+        ));
+    }
+
+    #[test]
+    fn test_plugin_install() {
+        let cli =
+            Cli::parse_from(["pulumi-rs", "plugin", "install", "resource", "aws", "6.0.0"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Plugin {
+                command: PluginCommands::Install { kind, name, version }
+            } if kind == "resource" && name == "aws" && version == "6.0.0"
+        ));
+    }
+
+    #[test]
+    fn test_plugin_rm() {
+        let cli = Cli::parse_from(["pulumi-rs", "plugin", "rm", "resource", "aws"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Plugin {
+                command: PluginCommands::Rm { kind, name, version: None }
+            } if kind == "resource" && name == "aws"
+        ));
+    }
+
+    #[test]
+    fn test_plugin_rm_with_version() {
+        let cli =
+            Cli::parse_from(["pulumi-rs", "plugin", "rm", "resource", "aws", "6.0.0"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Plugin {
+                command: PluginCommands::Rm { kind, name, version: Some(v) }
+            } if kind == "resource" && name == "aws" && v == "6.0.0"
         ));
     }
 
@@ -658,5 +958,54 @@ mod tests {
     fn test_cwd_custom() {
         let cli = Cli::parse_from(["pulumi-rs", "--cwd", "/tmp/project", "stack", "ls"]);
         assert_eq!(cli.cwd, "/tmp/project");
+    }
+
+    #[test]
+    fn test_format_diff_events_empty() {
+        assert_eq!(format_diff_events(&[]), "");
+    }
+
+    #[test]
+    fn test_format_diff_events_skips_same() {
+        use pulumi_automation::event::{ResourcePreEvent, StepEventMetadata};
+        let events = vec![EngineEvent {
+            sequence: 1,
+            prelude_event: None,
+            resource_pre_event: Some(ResourcePreEvent {
+                metadata: StepEventMetadata {
+                    op: "same".into(),
+                    urn: "urn:pulumi:dev::proj::aws:s3/bucket:Bucket::my-bucket".into(),
+                    resource_type: "aws:s3/bucket:Bucket".into(),
+                    old: None,
+                    new: None,
+                },
+            }),
+            summary_event: None,
+            diagnostic_event: None,
+        }];
+        assert_eq!(format_diff_events(&events), "");
+    }
+
+    #[test]
+    fn test_format_diff_events_create() {
+        use pulumi_automation::event::{ResourcePreEvent, StepEventMetadata};
+        let events = vec![EngineEvent {
+            sequence: 1,
+            prelude_event: None,
+            resource_pre_event: Some(ResourcePreEvent {
+                metadata: StepEventMetadata {
+                    op: "create".into(),
+                    urn: "urn:pulumi:dev::proj::aws:s3/bucket:Bucket::my-bucket".into(),
+                    resource_type: "aws:s3/bucket:Bucket".into(),
+                    old: None,
+                    new: None,
+                },
+            }),
+            summary_event: None,
+            diagnostic_event: None,
+        }];
+        let diff = format_diff_events(&events);
+        assert!(diff.contains("my-bucket"));
+        assert!(diff.contains("aws:s3/bucket:Bucket"));
     }
 }

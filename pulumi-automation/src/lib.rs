@@ -44,4 +44,4 @@ pub use event::EngineEvent;
 #[cfg(feature = "native-engine")]
 pub use native::NativeStack;
 pub use stack::{DestroyResult, OutputValue, PreviewResult, RefreshResult, Stack, UpResult};
-pub use workspace::{LocalWorkspace, StackSummary};
+pub use workspace::{LocalWorkspace, PluginInfo, StackSummary, WhoAmIResult};
