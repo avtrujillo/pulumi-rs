@@ -12,7 +12,7 @@
 | 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Asset/Archive types now use `pulumi::Asset`/`pulumi::Archive`. Remaining: union types (#9), larger provider validation (#10). See `pulumi-codegen/TODO.md`. |
 | 7 | Integration tests | new crate | Large | Medium | End-to-end tests using `pulumi-random` + automation API: resource registration, `Output<T>` combinators, secrets, config, stack references, resource options, error cases. Gate behind `--features integration` or a separate workspace member. |
 | 8 | crates.io publishing | all | Medium | Easy | Audit re-exports in `pulumi/src/lib.rs`, add crate-level docs and README, set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
-| 9 | Codegen union types | `pulumi-codegen` | Medium | Hard | `oneOf` currently emits `serde_json::Value`; generate proper Rust enums with `#[derive(Serialize, Deserialize)]` and `#[serde(untagged)]` or discriminated variants instead |
+| 9 | Codegen union types | `pulumi-codegen` | Medium | Hard | **DONE.** `oneOf` now generates named `#[serde(untagged)]` Rust enums (e.g. `StringOrInteger`) in `crate::types`, deduplicated across the schema. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 | 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
 
