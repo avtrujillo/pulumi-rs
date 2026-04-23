@@ -431,7 +431,7 @@ fn synthetic_schema_with_types_and_functions() {
             let prefix = obj.fields.iter().find(|f| f.rust_name == "prefix").unwrap();
             assert_eq!(prefix.rust_type, "Option<String>");
         }
-        ResolvedType::Enum(_) => panic!("Expected object"),
+        other => panic!("Expected object, got {other:?}"),
     }
 
     // Enum type
@@ -450,7 +450,7 @@ fn synthetic_schema_with_types_and_functions() {
             assert_eq!(e.variants[2].rust_name, "AuthenticatedRead");
             assert_eq!(e.variants[2].value, "authenticated-read");
         }
-        ResolvedType::Object(_) => panic!("Expected enum"),
+        other => panic!("Expected enum, got {other:?}"),
     }
 }
 

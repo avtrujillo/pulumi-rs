@@ -77,11 +77,12 @@ pub struct ResolvedField {
     pub required: bool,
 }
 
-/// A resolved complex type — either an object or an enum.
+/// A resolved complex type — either an object, an enum, or a union.
 #[derive(Debug)]
 pub enum ResolvedType {
     Object(ResolvedObject),
     Enum(ResolvedEnum),
+    Union(ResolvedUnion),
 }
 
 /// A resolved object (struct) type.
@@ -119,6 +120,21 @@ pub struct ResolvedEnumVariant {
     pub deprecation: Option<String>,
 }
 
+/// A resolved union (oneOf) type, emitted as a `#[serde(untagged)]` enum.
+#[derive(Debug)]
+pub struct ResolvedUnion {
+    pub rust_name: String,
+    pub file_name: String,
+    pub variants: Vec<UnionVariant>,
+}
+
+/// A single variant of a resolved union.
+#[derive(Debug)]
+pub struct UnionVariant {
+    pub rust_name: String,
+    pub rust_type: String,
+}
+
 // ---------------------------------------------------------------------------
 // Type resolution
 // ---------------------------------------------------------------------------
@@ -153,6 +169,64 @@ fn resolve_type_ref(ref_str: &str, module_format: Option<&str>) -> String {
     "serde_json::Value".to_string()
 }
 
+/// Map a resolved Rust type string to a PascalCase variant name for use in a union enum.
+fn type_to_variant_name(rust_type: &str) -> String {
+    match rust_type {
+        "String" => "String".to_string(),
+        "i64" => "Integer".to_string(),
+        "f64" => "Number".to_string(),
+        "bool" => "Boolean".to_string(),
+        "serde_json::Value" => "Any".to_string(),
+        "pulumi::Asset" => "Asset".to_string(),
+        "pulumi::Archive" => "Archive".to_string(),
+        _ => {
+            if let Some(inner) = rust_type.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                return format!("{}Array", type_to_variant_name(inner));
+            }
+            if let Some(inner) = rust_type
+                .strip_prefix("std::collections::HashMap<String, ")
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                return format!("{}Map", type_to_variant_name(inner));
+            }
+            // For crate::types::... paths, take the last path segment.
+            rust_type.split("::").last().unwrap_or(rust_type).to_string()
+        }
+    }
+}
+
+/// Resolve a `oneOf` variant list into a named union type, registering it in `unions`.
+/// Returns the fully-qualified Rust type path (`crate::types::SomeOrOther`).
+fn resolve_one_of(
+    variants: &[TypeSpec],
+    module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
+) -> String {
+    let union_variants: Vec<UnionVariant> = variants
+        .iter()
+        .map(|v| {
+            let rust_type = resolve_type_spec(v, module_format, unions);
+            let rust_name = type_to_variant_name(&rust_type);
+            UnionVariant { rust_name, rust_type }
+        })
+        .collect();
+
+    let rust_name: String = union_variants
+        .iter()
+        .map(|v| v.rust_name.as_str())
+        .collect::<Vec<_>>()
+        .join("Or");
+    let file_name = camel_to_snake_case(&rust_name);
+
+    unions.entry(rust_name.clone()).or_insert_with(|| ResolvedUnion {
+        rust_name: rust_name.clone(),
+        file_name,
+        variants: union_variants,
+    });
+
+    format!("crate::types::{rust_name}")
+}
+
 /// Core type resolution from the five type-describing fields shared by
 /// [`PropertySpec`] and [`TypeSpec`].
 fn resolve_raw_type(
@@ -162,10 +236,11 @@ fn resolve_raw_type(
     additional_properties: Option<&TypeSpec>,
     one_of: Option<&[TypeSpec]>,
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> String {
-    // Union types → opaque value for now.
-    if one_of.is_some() {
-        return "serde_json::Value".to_string();
+    // Union types → generate a named #[serde(untagged)] enum.
+    if let Some(variants) = one_of {
+        return resolve_one_of(variants, module_format, unions);
     }
 
     // Direct $ref.
@@ -181,13 +256,13 @@ fn resolve_raw_type(
         Some("boolean") => "bool".to_string(),
         Some("array") => {
             let inner = items
-                .map(|i| resolve_type_spec(i, module_format))
+                .map(|i| resolve_type_spec(i, module_format, unions))
                 .unwrap_or_else(|| "serde_json::Value".to_string());
             format!("Vec<{inner}>")
         }
         Some("object") => {
             if let Some(ap) = additional_properties {
-                let inner = resolve_type_spec(ap, module_format);
+                let inner = resolve_type_spec(ap, module_format, unions);
                 format!("std::collections::HashMap<String, {inner}>")
             } else {
                 // Bare `object` with no additionalProperties — treat as map of any.
@@ -199,7 +274,7 @@ fn resolve_raw_type(
 }
 
 /// Resolve a [`TypeSpec`] (used in `items`, `additionalProperties`, `oneOf`).
-fn resolve_type_spec(spec: &TypeSpec, module_format: Option<&str>) -> String {
+fn resolve_type_spec(spec: &TypeSpec, module_format: Option<&str>, unions: &mut BTreeMap<String, ResolvedUnion>) -> String {
     resolve_raw_type(
         spec.type_.as_deref(),
         spec.ref_.as_deref(),
@@ -207,11 +282,12 @@ fn resolve_type_spec(spec: &TypeSpec, module_format: Option<&str>) -> String {
         spec.additional_properties.as_deref(),
         spec.one_of.as_deref(),
         module_format,
+        unions,
     )
 }
 
 /// Resolve a [`PropertySpec`] to its base Rust type string (before optional wrapping).
-fn resolve_property_type(prop: &PropertySpec, module_format: Option<&str>) -> String {
+fn resolve_property_type(prop: &PropertySpec, module_format: Option<&str>, unions: &mut BTreeMap<String, ResolvedUnion>) -> String {
     resolve_raw_type(
         prop.type_.as_deref(),
         prop.ref_.as_deref(),
@@ -219,6 +295,7 @@ fn resolve_property_type(prop: &PropertySpec, module_format: Option<&str>) -> St
         prop.additional_properties.as_deref(),
         prop.one_of.as_deref(),
         module_format,
+        unions,
     )
 }
 
@@ -232,10 +309,11 @@ fn resolve_field(
     prop: &PropertySpec,
     is_required: bool,
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> ResolvedField {
     let snake = camel_to_snake_case(name);
     let rust_name = escape_rust_keyword(&snake);
-    let base_type = resolve_property_type(prop, module_format);
+    let base_type = resolve_property_type(prop, module_format, unions);
     let rust_type = if is_required {
         base_type
     } else {
@@ -258,12 +336,13 @@ fn resolve_fields(
     properties: &BTreeMap<String, PropertySpec>,
     required: &[String],
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> Vec<ResolvedField> {
     properties
         .iter()
         .map(|(name, prop)| {
             let is_required = required.contains(name);
-            resolve_field(name, prop, is_required, module_format)
+            resolve_field(name, prop, is_required, module_format, unions)
         })
         .collect()
 }
@@ -277,6 +356,7 @@ fn resolve_resource(
     token: &str,
     spec: &ResourceSpec,
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> Option<ResolvedResource> {
     if spec.is_overlay {
         return None;
@@ -284,8 +364,8 @@ fn resolve_resource(
     let parsed = parse_type_token(token, module_format)?;
     let rust_name = to_pascal_case(&parsed.name);
     let file_name = type_name_to_file_name(&parsed.name);
-    let input_fields = resolve_fields(&spec.input_properties, &spec.required_inputs, module_format);
-    let output_fields = resolve_fields(&spec.properties, &spec.required, module_format);
+    let input_fields = resolve_fields(&spec.input_properties, &spec.required_inputs, module_format, unions);
+    let output_fields = resolve_fields(&spec.properties, &spec.required, module_format, unions);
 
     Some(ResolvedResource {
         type_token: token.to_string(),
@@ -308,6 +388,7 @@ fn resolve_function(
     token: &str,
     spec: &FunctionSpec,
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> Option<ResolvedFunction> {
     if spec.is_overlay {
         return None;
@@ -319,13 +400,13 @@ fn resolve_function(
     let arg_fields = spec
         .inputs
         .as_ref()
-        .map(|obj| resolve_fields(&obj.properties, &obj.required, module_format))
+        .map(|obj| resolve_fields(&obj.properties, &obj.required, module_format, unions))
         .unwrap_or_default();
 
     let result_fields = spec
         .outputs
         .as_ref()
-        .map(|obj| resolve_fields(&obj.properties, &obj.required, module_format))
+        .map(|obj| resolve_fields(&obj.properties, &obj.required, module_format, unions))
         .unwrap_or_default();
 
     Some(ResolvedFunction {
@@ -348,6 +429,7 @@ fn resolve_complex_type(
     token: &str,
     spec: &ComplexTypeSpec,
     module_format: Option<&str>,
+    unions: &mut BTreeMap<String, ResolvedUnion>,
 ) -> Option<ResolvedType> {
     if spec.is_overlay {
         return None;
@@ -402,7 +484,7 @@ fn resolve_complex_type(
             variants,
         }))
     } else {
-        let fields = resolve_fields(&spec.properties, &spec.required, module_format);
+        let fields = resolve_fields(&spec.properties, &spec.required, module_format, unions);
         Some(ResolvedType::Object(ResolvedObject {
             token: token.to_string(),
             rust_name,
@@ -426,20 +508,21 @@ fn resolve_complex_type(
 pub fn resolve_package(schema: &PackageSchema) -> ResolvedPackage {
     let module_format = schema.meta.as_ref().and_then(|m| m.module_format.as_deref());
     let version = schema.version.clone().unwrap_or_else(|| "0.0.0".to_string());
+    let mut unions: BTreeMap<String, ResolvedUnion> = BTreeMap::new();
 
     // Resolve complex types.
-    let types: BTreeMap<String, ResolvedType> = schema
+    let mut types: BTreeMap<String, ResolvedType> = schema
         .types
         .iter()
         .filter_map(|(token, spec)| {
-            resolve_complex_type(token, spec, module_format).map(|t| (token.clone(), t))
+            resolve_complex_type(token, spec, module_format, &mut unions).map(|t| (token.clone(), t))
         })
         .collect();
 
     // Resolve resources, grouped by module.
     let mut module_resources: BTreeMap<String, Vec<ResolvedResource>> = BTreeMap::new();
     for (token, spec) in &schema.resources {
-        if let Some(resource) = resolve_resource(token, spec, module_format) {
+        if let Some(resource) = resolve_resource(token, spec, module_format, &mut unions) {
             let parsed = parse_type_token(token, module_format);
             let module_key = parsed
                 .map(|p| module_to_rust_identifier(&p.module))
@@ -451,7 +534,7 @@ pub fn resolve_package(schema: &PackageSchema) -> ResolvedPackage {
     // Resolve functions, grouped by module.
     let mut module_functions: BTreeMap<String, Vec<ResolvedFunction>> = BTreeMap::new();
     for (token, spec) in &schema.functions {
-        if let Some(function) = resolve_function(token, spec, module_format) {
+        if let Some(function) = resolve_function(token, spec, module_format, &mut unions) {
             let parsed = parse_type_token(token, module_format);
             let module_key = parsed
                 .map(|p| module_to_rust_identifier(&p.module))
@@ -461,6 +544,12 @@ pub fn resolve_package(schema: &PackageSchema) -> ResolvedPackage {
                 .or_default()
                 .push(function);
         }
+    }
+
+    // Merge generated union types into the types map. Use a synthetic key with
+    // a `_union:` prefix to avoid collisions with real provider type tokens.
+    for (rust_name, union) in unions {
+        types.insert(format!("_union:{rust_name}"), ResolvedType::Union(union));
     }
 
     // Merge into modules.
@@ -501,34 +590,22 @@ mod tests {
 
     #[test]
     fn resolve_builtin_any() {
-        assert_eq!(
-            resolve_type_ref("pulumi.json#/Any", None),
-            "serde_json::Value"
-        );
+        assert_eq!(resolve_type_ref("pulumi.json#/Any", None), "serde_json::Value");
     }
 
     #[test]
     fn resolve_builtin_asset() {
-        assert_eq!(
-            resolve_type_ref("pulumi.json#/Asset", None),
-            "pulumi::Asset"
-        );
+        assert_eq!(resolve_type_ref("pulumi.json#/Asset", None), "pulumi::Asset");
     }
 
     #[test]
     fn resolve_builtin_archive() {
-        assert_eq!(
-            resolve_type_ref("pulumi.json#/Archive", None),
-            "pulumi::Archive"
-        );
+        assert_eq!(resolve_type_ref("pulumi.json#/Archive", None), "pulumi::Archive");
     }
 
     #[test]
     fn resolve_builtin_json() {
-        assert_eq!(
-            resolve_type_ref("pulumi.json#/Json", None),
-            "serde_json::Value"
-        );
+        assert_eq!(resolve_type_ref("pulumi.json#/Json", None), "serde_json::Value");
     }
 
     // ---- Type resolution: local $ref ----
@@ -551,168 +628,73 @@ mod tests {
 
     #[test]
     fn resolve_ref_unrecognized_format() {
-        assert_eq!(
-            resolve_type_ref("some-other://ref", None),
-            "serde_json::Value"
-        );
+        assert_eq!(resolve_type_ref("some-other://ref", None), "serde_json::Value");
     }
 
-    // ---- Type resolution: primitives via resolve_raw_type ----
+    // ---- type_to_variant_name ----
 
     #[test]
-    fn resolve_primitive_string() {
-        assert_eq!(
-            resolve_raw_type(Some("string"), None, None, None, None, None),
-            "String"
-        );
-    }
-
-    #[test]
-    fn resolve_primitive_integer() {
-        assert_eq!(
-            resolve_raw_type(Some("integer"), None, None, None, None, None),
-            "i64"
-        );
+    fn variant_name_primitives() {
+        assert_eq!(type_to_variant_name("String"), "String");
+        assert_eq!(type_to_variant_name("i64"), "Integer");
+        assert_eq!(type_to_variant_name("f64"), "Number");
+        assert_eq!(type_to_variant_name("bool"), "Boolean");
+        assert_eq!(type_to_variant_name("serde_json::Value"), "Any");
+        assert_eq!(type_to_variant_name("pulumi::Asset"), "Asset");
+        assert_eq!(type_to_variant_name("pulumi::Archive"), "Archive");
     }
 
     #[test]
-    fn resolve_primitive_number() {
+    fn variant_name_composites() {
+        assert_eq!(type_to_variant_name("Vec<String>"), "StringArray");
+        assert_eq!(type_to_variant_name("Vec<i64>"), "IntegerArray");
         assert_eq!(
-            resolve_raw_type(Some("number"), None, None, None, None, None),
-            "f64"
+            type_to_variant_name("std::collections::HashMap<String, String>"),
+            "StringMap"
+        );
+        assert_eq!(
+            type_to_variant_name("std::collections::HashMap<String, i64>"),
+            "IntegerMap"
         );
     }
 
     #[test]
-    fn resolve_primitive_boolean() {
-        assert_eq!(
-            resolve_raw_type(Some("boolean"), None, None, None, None, None),
-            "bool"
-        );
+    fn variant_name_ref_type() {
+        assert_eq!(type_to_variant_name("crate::types::s3::BucketObject"), "BucketObject");
+        assert_eq!(type_to_variant_name("crate::types::Rule"), "Rule");
     }
 
-    // ---- Type resolution: composites ----
-
-    #[test]
-    fn resolve_array_of_strings() {
-        let items = TypeSpec {
-            type_: Some("string".to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            plain: false,
-        };
-        assert_eq!(
-            resolve_raw_type(Some("array"), None, Some(&items), None, None, None),
-            "Vec<String>"
-        );
-    }
-
-    #[test]
-    fn resolve_array_no_items() {
-        assert_eq!(
-            resolve_raw_type(Some("array"), None, None, None, None, None),
-            "Vec<serde_json::Value>"
-        );
-    }
-
-    #[test]
-    fn resolve_map_of_strings() {
-        let ap = TypeSpec {
-            type_: Some("string".to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            plain: false,
-        };
-        assert_eq!(
-            resolve_raw_type(Some("object"), None, None, Some(&ap), None, None),
-            "std::collections::HashMap<String, String>"
-        );
-    }
-
-    #[test]
-    fn resolve_bare_object() {
-        assert_eq!(
-            resolve_raw_type(Some("object"), None, None, None, None, None),
-            "std::collections::HashMap<String, serde_json::Value>"
-        );
-    }
+    // ---- resolve_one_of: registers union and returns type path ----
 
     #[test]
     fn resolve_one_of() {
         let variants = vec![
-            TypeSpec {
-                type_: Some("string".to_string()),
-                ref_: None,
-                items: None,
-                additional_properties: None,
-                one_of: None,
-                plain: false,
-            },
-            TypeSpec {
-                type_: Some("integer".to_string()),
-                ref_: None,
-                items: None,
-                additional_properties: None,
-                one_of: None,
-                plain: false,
-            },
+            TypeSpec { type_: Some("string".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
+            TypeSpec { type_: Some("integer".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
         ];
-        assert_eq!(
-            resolve_raw_type(None, None, None, None, Some(&variants), None),
-            "serde_json::Value"
-        );
+        let mut unions = BTreeMap::new();
+        let result = resolve_raw_type(None, None, None, None, Some(&variants), None, &mut unions);
+        assert_eq!(result, "crate::types::StringOrInteger");
+        assert!(unions.contains_key("StringOrInteger"));
+        let u = &unions["StringOrInteger"];
+        assert_eq!(u.variants.len(), 2);
+        assert_eq!(u.variants[0].rust_name, "String");
+        assert_eq!(u.variants[0].rust_type, "String");
+        assert_eq!(u.variants[1].rust_name, "Integer");
+        assert_eq!(u.variants[1].rust_type, "i64");
     }
 
     #[test]
-    fn resolve_nested_array_of_refs() {
-        let items = TypeSpec {
-            type_: None,
-            ref_: Some("#/types/aws:s3/Rule:Rule".to_string()),
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            plain: false,
-        };
-        assert_eq!(
-            resolve_raw_type(Some("array"), None, Some(&items), None, None, None),
-            "Vec<crate::types::s3::Rule>"
-        );
-    }
-
-    #[test]
-    fn resolve_map_of_refs() {
-        let ap = TypeSpec {
-            type_: None,
-            ref_: Some("#/types/aws:ec2/Tag:Tag".to_string()),
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            plain: false,
-        };
-        assert_eq!(
-            resolve_raw_type(Some("object"), None, None, Some(&ap), None, None),
-            "std::collections::HashMap<String, crate::types::ec2::Tag>"
-        );
-    }
-
-    #[test]
-    fn resolve_ref_takes_precedence_over_type() {
-        // When both $ref and type are present, $ref wins.
-        assert_eq!(
-            resolve_raw_type(
-                Some("string"),
-                Some("#/types/aws:s3/Bucket:Bucket"),
-                None,
-                None,
-                None,
-                None
-            ),
-            "crate::types::s3::Bucket"
-        );
+    fn resolve_one_of_deduplicates() {
+        let variants = vec![
+            TypeSpec { type_: Some("string".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
+            TypeSpec { type_: Some("boolean".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
+        ];
+        let mut unions = BTreeMap::new();
+        let r1 = resolve_raw_type(None, None, None, None, Some(&variants), None, &mut unions);
+        let r2 = resolve_raw_type(None, None, None, None, Some(&variants), None, &mut unions);
+        assert_eq!(r1, r2);
+        assert_eq!(unions.len(), 1);
     }
 
     #[test]
@@ -725,24 +707,113 @@ mod tests {
             one_of: None,
             plain: false,
         }];
+        let mut unions = BTreeMap::new();
         // oneOf takes precedence even if $ref is also present.
+        let result = resolve_raw_type(None, Some("#/types/aws:s3/Bucket:Bucket"), None, None, Some(&variants), None, &mut unions);
+        assert_eq!(result, "crate::types::String");
+        assert!(unions.contains_key("String"));
+    }
+
+    // ---- Type resolution: primitives via resolve_raw_type ----
+
+    #[test]
+    fn resolve_primitive_string() {
         assert_eq!(
-            resolve_raw_type(
-                None,
-                Some("#/types/aws:s3/Bucket:Bucket"),
-                None,
-                None,
-                Some(&variants),
-                None,
-            ),
-            "serde_json::Value"
+            resolve_raw_type(Some("string"), None, None, None, None, None, &mut BTreeMap::new()),
+            "String"
+        );
+    }
+
+    #[test]
+    fn resolve_primitive_integer() {
+        assert_eq!(
+            resolve_raw_type(Some("integer"), None, None, None, None, None, &mut BTreeMap::new()),
+            "i64"
+        );
+    }
+
+    #[test]
+    fn resolve_primitive_number() {
+        assert_eq!(
+            resolve_raw_type(Some("number"), None, None, None, None, None, &mut BTreeMap::new()),
+            "f64"
+        );
+    }
+
+    #[test]
+    fn resolve_primitive_boolean() {
+        assert_eq!(
+            resolve_raw_type(Some("boolean"), None, None, None, None, None, &mut BTreeMap::new()),
+            "bool"
+        );
+    }
+
+    // ---- Type resolution: composites ----
+
+    #[test]
+    fn resolve_array_of_strings() {
+        let items = TypeSpec { type_: Some("string".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false };
+        assert_eq!(
+            resolve_raw_type(Some("array"), None, Some(&items), None, None, None, &mut BTreeMap::new()),
+            "Vec<String>"
+        );
+    }
+
+    #[test]
+    fn resolve_array_no_items() {
+        assert_eq!(
+            resolve_raw_type(Some("array"), None, None, None, None, None, &mut BTreeMap::new()),
+            "Vec<serde_json::Value>"
+        );
+    }
+
+    #[test]
+    fn resolve_map_of_strings() {
+        let ap = TypeSpec { type_: Some("string".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false };
+        assert_eq!(
+            resolve_raw_type(Some("object"), None, None, Some(&ap), None, None, &mut BTreeMap::new()),
+            "std::collections::HashMap<String, String>"
+        );
+    }
+
+    #[test]
+    fn resolve_bare_object() {
+        assert_eq!(
+            resolve_raw_type(Some("object"), None, None, None, None, None, &mut BTreeMap::new()),
+            "std::collections::HashMap<String, serde_json::Value>"
+        );
+    }
+
+    #[test]
+    fn resolve_nested_array_of_refs() {
+        let items = TypeSpec { type_: None, ref_: Some("#/types/aws:s3/Rule:Rule".to_string()), items: None, additional_properties: None, one_of: None, plain: false };
+        assert_eq!(
+            resolve_raw_type(Some("array"), None, Some(&items), None, None, None, &mut BTreeMap::new()),
+            "Vec<crate::types::s3::Rule>"
+        );
+    }
+
+    #[test]
+    fn resolve_map_of_refs() {
+        let ap = TypeSpec { type_: None, ref_: Some("#/types/aws:ec2/Tag:Tag".to_string()), items: None, additional_properties: None, one_of: None, plain: false };
+        assert_eq!(
+            resolve_raw_type(Some("object"), None, None, Some(&ap), None, None, &mut BTreeMap::new()),
+            "std::collections::HashMap<String, crate::types::ec2::Tag>"
+        );
+    }
+
+    #[test]
+    fn resolve_ref_takes_precedence_over_type() {
+        assert_eq!(
+            resolve_raw_type(Some("string"), Some("#/types/aws:s3/Bucket:Bucket"), None, None, None, None, &mut BTreeMap::new()),
+            "crate::types::s3::Bucket"
         );
     }
 
     #[test]
     fn resolve_no_type_info() {
         assert_eq!(
-            resolve_raw_type(None, None, None, None, None, None),
+            resolve_raw_type(None, None, None, None, None, None, &mut BTreeMap::new()),
             "serde_json::Value"
         );
     }
@@ -753,19 +824,11 @@ mod tests {
     fn resolve_property_type_string() {
         let prop = PropertySpec {
             type_: Some("string".to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            description: None,
-            deprecation_message: None,
-            secret: false,
-            default_value: None,
-            plain: false,
-            replace_on_changes: false,
-            will_replace_on_changes: false,
+            ref_: None, items: None, additional_properties: None, one_of: None,
+            description: None, deprecation_message: None, secret: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
         };
-        assert_eq!(resolve_property_type(&prop, None), "String");
+        assert_eq!(resolve_property_type(&prop, None, &mut BTreeMap::new()), "String");
     }
 
     #[test]
@@ -773,36 +836,19 @@ mod tests {
         let prop = PropertySpec {
             type_: None,
             ref_: Some("#/types/aws:s3/BucketCors:BucketCors".to_string()),
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            description: None,
-            deprecation_message: None,
-            secret: false,
-            default_value: None,
-            plain: false,
-            replace_on_changes: false,
-            will_replace_on_changes: false,
+            items: None, additional_properties: None, one_of: None,
+            description: None, deprecation_message: None, secret: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
         };
-        assert_eq!(
-            resolve_property_type(&prop, None),
-            "crate::types::s3::BucketCors"
-        );
+        assert_eq!(resolve_property_type(&prop, None, &mut BTreeMap::new()), "crate::types::s3::BucketCors");
     }
 
     // ---- TypeSpec resolution ----
 
     #[test]
     fn resolve_type_spec_integer() {
-        let spec = TypeSpec {
-            type_: Some("integer".to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            plain: false,
-        };
-        assert_eq!(resolve_type_spec(&spec, None), "i64");
+        let spec = TypeSpec { type_: Some("integer".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false };
+        assert_eq!(resolve_type_spec(&spec, None, &mut BTreeMap::new()), "i64");
     }
 
     // ---- Field resolution ----
@@ -810,24 +856,16 @@ mod tests {
     fn make_prop(type_name: &str) -> PropertySpec {
         PropertySpec {
             type_: Some(type_name.to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            description: None,
-            deprecation_message: None,
-            secret: false,
-            default_value: None,
-            plain: false,
-            replace_on_changes: false,
-            will_replace_on_changes: false,
+            ref_: None, items: None, additional_properties: None, one_of: None,
+            description: None, deprecation_message: None, secret: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
         }
     }
 
     #[test]
     fn field_required_string() {
         let prop = make_prop("string");
-        let field = resolve_field("bucketPrefix", &prop, true, None);
+        let field = resolve_field("bucketPrefix", &prop, true, None, &mut BTreeMap::new());
         assert_eq!(field.original_name, "bucketPrefix");
         assert_eq!(field.rust_name, "bucket_prefix");
         assert_eq!(field.rust_type, "String");
@@ -837,7 +875,7 @@ mod tests {
     #[test]
     fn field_optional_integer() {
         let prop = make_prop("integer");
-        let field = resolve_field("count", &prop, false, None);
+        let field = resolve_field("count", &prop, false, None, &mut BTreeMap::new());
         assert_eq!(field.rust_name, "count");
         assert_eq!(field.rust_type, "Option<i64>");
         assert!(!field.required);
@@ -846,7 +884,7 @@ mod tests {
     #[test]
     fn field_keyword_escape() {
         let prop = make_prop("string");
-        let field = resolve_field("type", &prop, true, None);
+        let field = resolve_field("type", &prop, true, None, &mut BTreeMap::new());
         assert_eq!(field.original_name, "type");
         assert_eq!(field.rust_name, "r#type");
         assert_eq!(field.rust_type, "String");
@@ -855,7 +893,7 @@ mod tests {
     #[test]
     fn field_self_keyword_escape() {
         let prop = make_prop("boolean");
-        let field = resolve_field("self", &prop, false, None);
+        let field = resolve_field("self", &prop, false, None, &mut BTreeMap::new());
         assert_eq!(field.original_name, "self");
         assert_eq!(field.rust_name, "self_");
         assert_eq!(field.rust_type, "Option<bool>");
@@ -865,19 +903,13 @@ mod tests {
     fn field_preserves_metadata() {
         let prop = PropertySpec {
             type_: Some("string".to_string()),
-            ref_: None,
-            items: None,
-            additional_properties: None,
-            one_of: None,
+            ref_: None, items: None, additional_properties: None, one_of: None,
             description: Some("A description".to_string()),
             deprecation_message: Some("Use other field".to_string()),
             secret: true,
-            default_value: None,
-            plain: false,
-            replace_on_changes: false,
-            will_replace_on_changes: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
         };
-        let field = resolve_field("myField", &prop, true, None);
+        let field = resolve_field("myField", &prop, true, None, &mut BTreeMap::new());
         assert_eq!(field.description.as_deref(), Some("A description"));
         assert_eq!(field.deprecation.as_deref(), Some("Use other field"));
         assert!(field.secret);
@@ -888,20 +920,31 @@ mod tests {
         let prop = PropertySpec {
             type_: None,
             ref_: Some("#/types/aws:s3/BucketCors:BucketCors".to_string()),
-            items: None,
-            additional_properties: None,
-            one_of: None,
-            description: None,
-            deprecation_message: None,
-            secret: false,
-            default_value: None,
-            plain: false,
-            replace_on_changes: false,
-            will_replace_on_changes: false,
+            items: None, additional_properties: None, one_of: None,
+            description: None, deprecation_message: None, secret: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
         };
-        let field = resolve_field("corsRules", &prop, false, None);
+        let field = resolve_field("corsRules", &prop, false, None, &mut BTreeMap::new());
         assert_eq!(field.rust_name, "cors_rules");
         assert_eq!(field.rust_type, "Option<crate::types::s3::BucketCors>");
+    }
+
+    #[test]
+    fn field_one_of_generates_union() {
+        let prop = PropertySpec {
+            type_: None, ref_: None,
+            items: None, additional_properties: None,
+            one_of: Some(vec![
+                TypeSpec { type_: Some("string".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
+                TypeSpec { type_: Some("integer".to_string()), ref_: None, items: None, additional_properties: None, one_of: None, plain: false },
+            ]),
+            description: None, deprecation_message: None, secret: false,
+            default_value: None, plain: false, replace_on_changes: false, will_replace_on_changes: false,
+        };
+        let mut unions = BTreeMap::new();
+        let field = resolve_field("value", &prop, true, None, &mut unions);
+        assert_eq!(field.rust_type, "crate::types::StringOrInteger");
+        assert!(unions.contains_key("StringOrInteger"));
     }
 
     #[test]
@@ -912,18 +955,16 @@ mod tests {
         properties.insert("enabled".to_string(), make_prop("boolean"));
 
         let required = vec!["name".to_string()];
-        let fields = resolve_fields(&properties, &required, None);
+        let fields = resolve_fields(&properties, &required, None, &mut BTreeMap::new());
 
         assert_eq!(fields.len(), 3);
         // BTreeMap iterates in alphabetical order: count, enabled, name
         assert_eq!(fields[0].rust_name, "count");
         assert_eq!(fields[0].rust_type, "Option<i64>");
         assert!(!fields[0].required);
-
         assert_eq!(fields[1].rust_name, "enabled");
         assert_eq!(fields[1].rust_type, "Option<bool>");
         assert!(!fields[1].required);
-
         assert_eq!(fields[2].rust_name, "name");
         assert_eq!(fields[2].rust_type, "String");
         assert!(fields[2].required);
@@ -936,41 +977,31 @@ mod tests {
         let mut input_properties = BTreeMap::new();
         input_properties.insert("name".to_string(), make_prop("string"));
         input_properties.insert("count".to_string(), make_prop("integer"));
-
         let mut properties = BTreeMap::new();
         properties.insert("id".to_string(), make_prop("string"));
         properties.insert("name".to_string(), make_prop("string"));
 
         let spec = ResourceSpec {
             description: Some("A test resource".to_string()),
-            input_properties,
-            properties,
+            input_properties, properties,
             required_inputs: vec!["name".to_string()],
             required: vec!["id".to_string(), "name".to_string()],
-            deprecation_message: None,
-            is_component: false,
-            is_overlay: false,
-            methods: BTreeMap::new(),
-            state_inputs: None,
-            aliases: vec![],
+            deprecation_message: None, is_component: false, is_overlay: false,
+            methods: BTreeMap::new(), state_inputs: None, aliases: vec![],
         };
 
-        let res = resolve_resource("test:index/myResource:MyResource", &spec, None).unwrap();
+        let res = resolve_resource("test:index/myResource:MyResource", &spec, None, &mut BTreeMap::new()).unwrap();
         assert_eq!(res.type_token, "test:index/myResource:MyResource");
         assert_eq!(res.rust_name, "MyResource");
         assert_eq!(res.file_name, "my_resource");
         assert_eq!(res.description.as_deref(), Some("A test resource"));
         assert!(!res.is_component);
-
-        // Input fields
         assert_eq!(res.input_fields.len(), 2);
         let count_field = res.input_fields.iter().find(|f| f.rust_name == "count").unwrap();
         assert_eq!(count_field.rust_type, "Option<i64>");
         let name_input = res.input_fields.iter().find(|f| f.rust_name == "name").unwrap();
         assert_eq!(name_input.rust_type, "String");
         assert!(name_input.required);
-
-        // Output fields
         assert_eq!(res.output_fields.len(), 2);
         let id_field = res.output_fields.iter().find(|f| f.rust_name == "id").unwrap();
         assert_eq!(id_field.rust_type, "String");
@@ -980,37 +1011,21 @@ mod tests {
     #[test]
     fn resource_overlay_skipped() {
         let spec = ResourceSpec {
-            description: None,
-            input_properties: BTreeMap::new(),
-            properties: BTreeMap::new(),
-            required_inputs: vec![],
-            required: vec![],
-            deprecation_message: None,
-            is_component: false,
-            is_overlay: true,
-            methods: BTreeMap::new(),
-            state_inputs: None,
-            aliases: vec![],
+            description: None, input_properties: BTreeMap::new(), properties: BTreeMap::new(),
+            required_inputs: vec![], required: vec![], deprecation_message: None,
+            is_component: false, is_overlay: true, methods: BTreeMap::new(), state_inputs: None, aliases: vec![],
         };
-        assert!(resolve_resource("test:index/overlay:Overlay", &spec, None).is_none());
+        assert!(resolve_resource("test:index/overlay:Overlay", &spec, None, &mut BTreeMap::new()).is_none());
     }
 
     #[test]
     fn resource_component() {
         let spec = ResourceSpec {
-            description: None,
-            input_properties: BTreeMap::new(),
-            properties: BTreeMap::new(),
-            required_inputs: vec![],
-            required: vec![],
-            deprecation_message: None,
-            is_component: true,
-            is_overlay: false,
-            methods: BTreeMap::new(),
-            state_inputs: None,
-            aliases: vec![],
+            description: None, input_properties: BTreeMap::new(), properties: BTreeMap::new(),
+            required_inputs: vec![], required: vec![], deprecation_message: None,
+            is_component: true, is_overlay: false, methods: BTreeMap::new(), state_inputs: None, aliases: vec![],
         };
-        let res = resolve_resource("test:index/comp:MyComponent", &spec, None).unwrap();
+        let res = resolve_resource("test:index/comp:MyComponent", &spec, None, &mut BTreeMap::new()).unwrap();
         assert!(res.is_component);
         assert_eq!(res.rust_name, "MyComponent");
     }
@@ -1018,19 +1033,12 @@ mod tests {
     #[test]
     fn resource_deprecated() {
         let spec = ResourceSpec {
-            description: None,
-            input_properties: BTreeMap::new(),
-            properties: BTreeMap::new(),
-            required_inputs: vec![],
-            required: vec![],
+            description: None, input_properties: BTreeMap::new(), properties: BTreeMap::new(),
+            required_inputs: vec![], required: vec![],
             deprecation_message: Some("Use NewResource instead".to_string()),
-            is_component: false,
-            is_overlay: false,
-            methods: BTreeMap::new(),
-            state_inputs: None,
-            aliases: vec![],
+            is_component: false, is_overlay: false, methods: BTreeMap::new(), state_inputs: None, aliases: vec![],
         };
-        let res = resolve_resource("test:index/old:OldResource", &spec, None).unwrap();
+        let res = resolve_resource("test:index/old:OldResource", &spec, None, &mut BTreeMap::new()).unwrap();
         assert_eq!(res.deprecation.as_deref(), Some("Use NewResource instead"));
     }
 
@@ -1041,14 +1049,9 @@ mod tests {
         let spec = FunctionSpec {
             description: Some("Get a widget".to_string()),
             inputs: Some(crate::schema::ObjectTypeSpec {
-                properties: {
-                    let mut m = BTreeMap::new();
-                    m.insert("id".to_string(), make_prop("string"));
-                    m
-                },
+                properties: { let mut m = BTreeMap::new(); m.insert("id".to_string(), make_prop("string")); m },
                 required: vec!["id".to_string()],
-                description: None,
-                type_: None,
+                description: None, type_: None,
             }),
             outputs: Some(crate::schema::ObjectTypeSpec {
                 properties: {
@@ -1058,23 +1061,18 @@ mod tests {
                     m
                 },
                 required: vec!["name".to_string(), "value".to_string()],
-                description: None,
-                type_: None,
+                description: None, type_: None,
             }),
-            deprecation_message: None,
-            is_overlay: false,
-            multi_argument_inputs: None,
+            deprecation_message: None, is_overlay: false, multi_argument_inputs: None,
         };
 
-        let func = resolve_function("test:index/getWidget:getWidget", &spec, None).unwrap();
+        let func = resolve_function("test:index/getWidget:getWidget", &spec, None, &mut BTreeMap::new()).unwrap();
         assert_eq!(func.rust_name, "GetWidget");
         assert_eq!(func.file_name, "get_widget");
         assert_eq!(func.description.as_deref(), Some("Get a widget"));
-
         assert_eq!(func.arg_fields.len(), 1);
         assert_eq!(func.arg_fields[0].rust_name, "id");
         assert_eq!(func.arg_fields[0].rust_type, "String");
-
         assert_eq!(func.result_fields.len(), 2);
         let name_field = func.result_fields.iter().find(|f| f.rust_name == "name").unwrap();
         assert_eq!(name_field.rust_type, "String");
@@ -1084,15 +1082,8 @@ mod tests {
 
     #[test]
     fn function_no_inputs_or_outputs() {
-        let spec = FunctionSpec {
-            description: None,
-            inputs: None,
-            outputs: None,
-            deprecation_message: None,
-            is_overlay: false,
-            multi_argument_inputs: None,
-        };
-        let func = resolve_function("test:index/doThing:doThing", &spec, None).unwrap();
+        let spec = FunctionSpec { description: None, inputs: None, outputs: None, deprecation_message: None, is_overlay: false, multi_argument_inputs: None };
+        let func = resolve_function("test:index/doThing:doThing", &spec, None, &mut BTreeMap::new()).unwrap();
         assert_eq!(func.rust_name, "DoThing");
         assert!(func.arg_fields.is_empty());
         assert!(func.result_fields.is_empty());
@@ -1100,15 +1091,8 @@ mod tests {
 
     #[test]
     fn function_overlay_skipped() {
-        let spec = FunctionSpec {
-            description: None,
-            inputs: None,
-            outputs: None,
-            deprecation_message: None,
-            is_overlay: true,
-            multi_argument_inputs: None,
-        };
-        assert!(resolve_function("test:index/overlay:overlay", &spec, None).is_none());
+        let spec = FunctionSpec { description: None, inputs: None, outputs: None, deprecation_message: None, is_overlay: true, multi_argument_inputs: None };
+        assert!(resolve_function("test:index/overlay:overlay", &spec, None, &mut BTreeMap::new()).is_none());
     }
 
     // ---- Complex type resolution ----
@@ -1125,11 +1109,12 @@ mod tests {
                 m
             },
             required: vec!["enabled".to_string()],
-            enum_values: None,
-            is_overlay: false,
+            enum_values: None, is_overlay: false,
         };
 
-        let resolved = resolve_complex_type("aws:s3/BucketLifecycleRule:BucketLifecycleRule", &spec, None).unwrap();
+        let resolved = resolve_complex_type(
+            "aws:s3/BucketLifecycleRule:BucketLifecycleRule", &spec, None, &mut BTreeMap::new()
+        ).unwrap();
         match resolved {
             ResolvedType::Object(obj) => {
                 assert_eq!(obj.rust_name, "BucketLifecycleRule");
@@ -1142,7 +1127,7 @@ mod tests {
                 let prefix = obj.fields.iter().find(|f| f.rust_name == "prefix").unwrap();
                 assert_eq!(prefix.rust_type, "Option<String>");
             }
-            ResolvedType::Enum(_) => panic!("Expected object, got enum"),
+            other => panic!("Expected object, got {other:?}"),
         }
     }
 
@@ -1154,48 +1139,29 @@ mod tests {
             properties: BTreeMap::new(),
             required: vec![],
             enum_values: Some(vec![
-                crate::schema::EnumValueSpec {
-                    name: Some("Private".to_string()),
-                    value: serde_json::Value::String("private".to_string()),
-                    description: Some("Private access".to_string()),
-                    deprecation_message: None,
-                },
-                crate::schema::EnumValueSpec {
-                    name: Some("PublicRead".to_string()),
-                    value: serde_json::Value::String("public-read".to_string()),
-                    description: None,
-                    deprecation_message: None,
-                },
-                crate::schema::EnumValueSpec {
-                    name: None,
-                    value: serde_json::Value::String("public-read-write".to_string()),
-                    description: None,
-                    deprecation_message: None,
-                },
+                crate::schema::EnumValueSpec { name: Some("Private".to_string()), value: serde_json::Value::String("private".to_string()), description: Some("Private access".to_string()), deprecation_message: None },
+                crate::schema::EnumValueSpec { name: Some("PublicRead".to_string()), value: serde_json::Value::String("public-read".to_string()), description: None, deprecation_message: None },
+                crate::schema::EnumValueSpec { name: None, value: serde_json::Value::String("public-read-write".to_string()), description: None, deprecation_message: None },
             ]),
             is_overlay: false,
         };
 
-        let resolved = resolve_complex_type("aws:s3/CannedAcl:CannedAcl", &spec, None).unwrap();
+        let resolved = resolve_complex_type("aws:s3/CannedAcl:CannedAcl", &spec, None, &mut BTreeMap::new()).unwrap();
         match resolved {
             ResolvedType::Enum(e) => {
                 assert_eq!(e.rust_name, "CannedAcl");
                 assert_eq!(e.module, "s3");
                 assert_eq!(e.underlying_type, "String");
                 assert_eq!(e.variants.len(), 3);
-
                 assert_eq!(e.variants[0].rust_name, "Private");
                 assert_eq!(e.variants[0].value, "private");
                 assert_eq!(e.variants[0].description.as_deref(), Some("Private access"));
-
                 assert_eq!(e.variants[1].rust_name, "PublicRead");
                 assert_eq!(e.variants[1].value, "public-read");
-
-                // Unnamed variant — derived from value via to_pascal_case
                 assert_eq!(e.variants[2].rust_name, "PublicReadWrite");
                 assert_eq!(e.variants[2].value, "public-read-write");
             }
-            ResolvedType::Object(_) => panic!("Expected enum, got object"),
+            other => panic!("Expected enum, got {other:?}"),
         }
     }
 
@@ -1207,23 +1173,13 @@ mod tests {
             properties: BTreeMap::new(),
             required: vec![],
             enum_values: Some(vec![
-                crate::schema::EnumValueSpec {
-                    name: Some("Small".to_string()),
-                    value: serde_json::json!(1),
-                    description: None,
-                    deprecation_message: None,
-                },
-                crate::schema::EnumValueSpec {
-                    name: None,
-                    value: serde_json::json!(99),
-                    description: None,
-                    deprecation_message: None,
-                },
+                crate::schema::EnumValueSpec { name: Some("Small".to_string()), value: serde_json::json!(1), description: None, deprecation_message: None },
+                crate::schema::EnumValueSpec { name: None, value: serde_json::json!(99), description: None, deprecation_message: None },
             ]),
             is_overlay: false,
         };
 
-        let resolved = resolve_complex_type("test:index/Size:Size", &spec, None).unwrap();
+        let resolved = resolve_complex_type("test:index/Size:Size", &spec, None, &mut BTreeMap::new()).unwrap();
         match resolved {
             ResolvedType::Enum(e) => {
                 assert_eq!(e.underlying_type, "i64");
@@ -1233,20 +1189,69 @@ mod tests {
                 assert_eq!(e.variants[1].rust_name, "V99");
                 assert_eq!(e.variants[1].value, "99");
             }
-            ResolvedType::Object(_) => panic!("Expected enum, got object"),
+            other => panic!("Expected enum, got {other:?}"),
         }
     }
 
     #[test]
     fn complex_type_overlay_skipped() {
         let spec = ComplexTypeSpec {
-            description: None,
-            type_: Some("object".to_string()),
-            properties: BTreeMap::new(),
-            required: vec![],
-            enum_values: None,
-            is_overlay: true,
+            description: None, type_: Some("object".to_string()), properties: BTreeMap::new(),
+            required: vec![], enum_values: None, is_overlay: true,
         };
-        assert!(resolve_complex_type("test:index/overlay:Overlay", &spec, None).is_none());
+        assert!(resolve_complex_type("test:index/overlay:Overlay", &spec, None, &mut BTreeMap::new()).is_none());
+    }
+
+    // ---- resolve_package with union types ----
+
+    #[test]
+    fn resolve_package_with_one_of() {
+        let json = r#"{
+            "name": "test",
+            "resources": {
+                "test:index/thing:Thing": {
+                    "inputProperties": {
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "integer" }
+                            ]
+                        }
+                    },
+                    "properties": {
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "integer" }
+                            ]
+                        }
+                    },
+                    "requiredInputs": ["value"],
+                    "required": ["value"]
+                }
+            }
+        }"#;
+        let schema: crate::schema::PackageSchema = serde_json::from_str(json).unwrap();
+        let pkg = resolve_package(&schema);
+
+        // Union type should appear in package types.
+        let union_key = "_union:StringOrInteger";
+        assert!(pkg.types.contains_key(union_key), "expected union type in package types");
+        match &pkg.types[union_key] {
+            ResolvedType::Union(u) => {
+                assert_eq!(u.rust_name, "StringOrInteger");
+                assert_eq!(u.file_name, "string_or_integer");
+                assert_eq!(u.variants.len(), 2);
+                assert_eq!(u.variants[0].rust_name, "String");
+                assert_eq!(u.variants[1].rust_name, "Integer");
+            }
+            other => panic!("Expected union, got {other:?}"),
+        }
+
+        // Field on the resource should reference the generated union type.
+        let module = pkg.modules.get("").unwrap();
+        let res = module.resources.iter().find(|r| r.rust_name == "Thing").unwrap();
+        let val_input = res.input_fields.iter().find(|f| f.rust_name == "value").unwrap();
+        assert_eq!(val_input.rust_type, "crate::types::StringOrInteger");
     }
 }

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::ir::{
     ResolvedEnum, ResolvedField, ResolvedFunction, ResolvedObject, ResolvedPackage,
-    ResolvedResource, ResolvedType,
+    ResolvedResource, ResolvedType, ResolvedUnion,
 };
 
 /// Options for code emission.
@@ -76,13 +76,11 @@ pub fn emit_package_with_options(
     let mut types_by_module: BTreeMap<String, Vec<&ResolvedType>> = BTreeMap::new();
     for resolved_type in package.types.values() {
         let module = match resolved_type {
-            ResolvedType::Object(o) => &o.module,
-            ResolvedType::Enum(e) => &e.module,
+            ResolvedType::Object(o) => o.module.clone(),
+            ResolvedType::Enum(e) => e.module.clone(),
+            ResolvedType::Union(_) => String::new(),
         };
-        types_by_module
-            .entry(module.clone())
-            .or_default()
-            .push(resolved_type);
+        types_by_module.entry(module).or_default().push(resolved_type);
     }
 
     // Emit root module resource/function files.
@@ -307,6 +305,7 @@ fn type_file_name(resolved_type: &ResolvedType) -> &str {
     match resolved_type {
         ResolvedType::Object(o) => &o.file_name,
         ResolvedType::Enum(e) => &e.file_name,
+        ResolvedType::Union(u) => &u.file_name,
     }
 }
 
@@ -408,6 +407,7 @@ fn emit_type_file(resolved_type: &ResolvedType) -> (&str, String) {
     match resolved_type {
         ResolvedType::Object(obj) => (&obj.file_name, emit_object_type(obj)),
         ResolvedType::Enum(e) => (&e.file_name, emit_enum_type(e)),
+        ResolvedType::Union(u) => (&u.file_name, emit_union_type(u)),
     }
 }
 
@@ -443,6 +443,19 @@ fn emit_enum_type(e: &ResolvedEnum) -> String {
     }
     writeln!(out, "}}").unwrap();
 
+    out
+}
+
+fn emit_union_type(u: &ResolvedUnion) -> String {
+    let mut out = String::new();
+    out.push_str("use serde::{Deserialize, Serialize};\n\n");
+    writeln!(out, "#[derive(Serialize, Deserialize, Clone)]").unwrap();
+    writeln!(out, "#[serde(untagged)]").unwrap();
+    writeln!(out, "pub enum {} {{", u.rust_name).unwrap();
+    for variant in &u.variants {
+        writeln!(out, "    {}({}),", variant.rust_name, variant.rust_type).unwrap();
+    }
+    writeln!(out, "}}").unwrap();
     out
 }
 
@@ -495,7 +508,7 @@ mod tests {
     use super::*;
     use crate::ir::{
         ResolvedEnum, ResolvedEnumVariant, ResolvedField, ResolvedFunction, ResolvedModule,
-        ResolvedObject, ResolvedPackage, ResolvedResource, ResolvedType,
+        ResolvedObject, ResolvedPackage, ResolvedResource, ResolvedType, ResolvedUnion,
     };
     use std::collections::BTreeMap;
 
@@ -692,6 +705,26 @@ mod tests {
         assert!(code.contains("    Red,"));
         assert!(code.contains("#[serde(rename = \"blue\")]"));
         assert!(code.contains("    Blue,"));
+    }
+
+    // ---- Union type file ----
+
+    #[test]
+    fn union_type_file() {
+        let u = ResolvedUnion {
+            rust_name: "StringOrInteger".to_string(),
+            file_name: "string_or_integer".to_string(),
+            variants: vec![
+                crate::ir::UnionVariant { rust_name: "String".to_string(), rust_type: "String".to_string() },
+                crate::ir::UnionVariant { rust_name: "Integer".to_string(), rust_type: "i64".to_string() },
+            ],
+        };
+        let code = emit_union_type(&u);
+        assert!(code.contains("#[derive(Serialize, Deserialize, Clone)]"));
+        assert!(code.contains("#[serde(untagged)]"));
+        assert!(code.contains("pub enum StringOrInteger {"));
+        assert!(code.contains("    String(String),"));
+        assert!(code.contains("    Integer(i64),"));
     }
 
     // ---- lib.rs ----
