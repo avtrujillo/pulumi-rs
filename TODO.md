@@ -9,7 +9,7 @@
 | 3 | Transforms | `pulumi-engine` | Medium | Hard | **DONE.** `register_stack_transform` now stores callbacks and invokes them sequentially via gRPC before each resource registration. |
 | 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | **DONE.** Config operations (`get_config`, `set_config`, `get_all_config`, `remove_config`) persisted to `.pulumi-rs/<stack>.config.json`; `outputs()` reads from checkpoint; `PULUMI_CONFIG`/`PULUMI_CONFIG_SECRET_KEYS` wired correctly to the program; structured engine events (Prelude, ResourceStep, Diagnostic, Summary) now populated in all result types. |
 | 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
-| 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Remaining: union types, asset/archive types, larger provider validation. See `pulumi-codegen/TODO.md`. |
+| 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Asset/Archive types now use `pulumi::Asset`/`pulumi::Archive`. Remaining: union types, larger provider validation. See `pulumi-codegen/TODO.md`. |
 | 7 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
 | 8 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
 
@@ -40,38 +40,21 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 
 **Purpose:** Let users unit-test their Pulumi programs without deploying anything.
 
-**Status: PARTIALLY DONE.**
+**Status: DONE.**
 
-Steps 1 and 2 are complete. `connection.rs` provides `MonitorConnection` and
-`EngineConnection` traits with `GrpcMonitor`/`GrpcEngine` (real) and
-`MockMonitor`/`MockEngine` (test) implementations. `Context` is now generic
-over these traits, so mock clients can be injected without gRPC or env vars.
+`connection.rs` provides `MonitorConnection` and `EngineConnection` traits with
+`GrpcMonitor`/`GrpcEngine` (real) and `MockMonitor`/`MockEngine` (test)
+implementations. `Context` is now generic over these traits, enabling mock
+injection without gRPC or env vars.
+
+`TestContextBuilder` and `TestContext` live in `test_support.rs` and support:
+- Canned per-resource responses keyed by name/type
+- Preview mode (returns unknowns)
+- Config injection
+- Registration assertions via `registered_resources()`
 
 **Remaining work:**
-
-1. **`TestContext`** constructor that wires up mock clients without needing
-   `PULUMI_*` env vars or network connections:
-   ```rust
-   let ctx = TestContext::new()
-       .with_resource_response::<S3Bucket>("my-bucket", mock_outputs)
-       .build();
-   ```
-
-2. **Assertion helpers** to inspect what was registered:
-   ```rust
-   let registrations = ctx.registered_resources();
-   assert_eq!(registrations[0].type_token, "aws:s3/bucket:Bucket");
-   assert_eq!(registrations[0].name, "my-bucket");
-   ```
-
-3. **Preview-mode simulation.** In preview, outputs are "unknown". The mock
-   framework should support returning unknowns so users can test that their
-   `Output::map` / `Output::flat_map` chains handle unknown values correctly.
-
-**What remains to change:**
-- New `pulumi-test` crate (or `pulumi-core/src/test_support.rs` behind a
-  `test-support` feature) with `TestContext` and assertion utilities
-- Flesh out `MockMonitor` with configurable per-resource responses
+- Flesh out `MockMonitor` further: error injection, call recording for finer-grained assertions
 
 ## Integration Tests
 

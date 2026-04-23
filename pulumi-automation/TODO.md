@@ -28,9 +28,11 @@ converted to the `pulumi_automation::event::EngineEvent` format in `native.rs`.
 
 ## Error Handling Improvements
 
-- `CommandFailed` includes raw stdout/stderr — consider parsing structured
-  error output when available
-- Add `From<pulumi_engine::Error>` conversion for the `native-engine` path
+**DONE.** `error.rs` no longer uses `thiserror`; manual `Display`/`Error`/`From` impls
+give full control. `extract_error_lines()` surfaces only `error:` lines from CLI
+stderr so `CommandFailed` messages are concise. Feature-gated
+`From<pulumi_engine::Error>` maps `ProgramFailed → CommandFailed` for the
+`native-engine` path. 15 tests added to `error.rs`.
 
 ## Edition
 

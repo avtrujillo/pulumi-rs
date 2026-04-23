@@ -108,7 +108,7 @@ These decisions are final — do not revisit unless there's a concrete problem.
 4. **Union types (`oneOf`) → `serde_json::Value`** for now. Proper enum generation
    is a follow-up.
 
-5. **Asset/Archive → `serde_json::Value`** until the SDK adds dedicated types.
+5. **Asset/Archive → `pulumi::Asset` / `pulumi::Archive`**. `pulumi-core` provides dedicated enums; codegen maps `pulumi.json#/Asset` and `pulumi.json#/Archive` refs to these types.
 
 6. **`index` module → crate root** (not a submodule named `index`).
 
@@ -173,8 +173,8 @@ Type references: `{"type": "string"}`, `{"type": "array", "items": ...}`,
 | `"object"` + `additionalProperties` | `std::collections::HashMap<String, T>` |
 | `$ref` to named type | generated struct/enum (qualified path) |
 | `$ref` to `pulumi.json#/Any` | `serde_json::Value` |
-| `$ref` to `pulumi.json#/Asset` | `serde_json::Value` |
-| `$ref` to `pulumi.json#/Archive` | `serde_json::Value` |
+| `$ref` to `pulumi.json#/Asset` | `pulumi::Asset` |
+| `$ref` to `pulumi.json#/Archive` | `pulumi::Archive` |
 | `oneOf` | `serde_json::Value` |
 | not in `required`/`requiredInputs` | `Option<T>` |
 

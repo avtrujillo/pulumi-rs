@@ -128,6 +128,11 @@ pub struct ResolvedEnumVariant {
 /// Handles Pulumi built-in refs (`pulumi.json#/Any`, etc.) and local type
 /// refs (`#/types/pkg:mod:Name`).
 fn resolve_type_ref(ref_str: &str, module_format: Option<&str>) -> String {
+    match ref_str {
+        "pulumi.json#/Asset" => return "pulumi::Asset".to_string(),
+        "pulumi.json#/Archive" => return "pulumi::Archive".to_string(),
+        _ => {}
+    }
     if ref_str.starts_with("pulumi.json#/") {
         return "serde_json::Value".to_string();
     }
@@ -506,7 +511,7 @@ mod tests {
     fn resolve_builtin_asset() {
         assert_eq!(
             resolve_type_ref("pulumi.json#/Asset", None),
-            "serde_json::Value"
+            "pulumi::Asset"
         );
     }
 
@@ -514,7 +519,7 @@ mod tests {
     fn resolve_builtin_archive() {
         assert_eq!(
             resolve_type_ref("pulumi.json#/Archive", None),
-            "serde_json::Value"
+            "pulumi::Archive"
         );
     }
 
