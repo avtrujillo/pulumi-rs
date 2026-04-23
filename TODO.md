@@ -8,10 +8,13 @@
 | 2 | TestContext builder | `pulumi-core` | Medium | Medium | **DONE.** `TestContextBuilder` and `TestContext` in `test_support.rs`; supports canned responses, preview mode, config injection, and registration assertions. |
 | 3 | Transforms | `pulumi-engine` | Medium | Hard | **DONE.** `register_stack_transform` now stores callbacks and invokes them sequentially via gRPC before each resource registration. |
 | 4 | NativeStack parity | `pulumi-automation` | Medium | Medium | **DONE.** Config operations (`get_config`, `set_config`, `get_all_config`, `remove_config`) persisted to `.pulumi-rs/<stack>.config.json`; `outputs()` reads from checkpoint; `PULUMI_CONFIG`/`PULUMI_CONFIG_SECRET_KEYS` wired correctly to the program; structured engine events (Prelude, ResourceStep, Diagnostic, Summary) now populated in all result types. |
-| 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | orchestrator.rs, engine_service.rs, and monitor_service.rs have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
-| 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Remaining: union types, asset/archive types, larger provider validation. See `pulumi-codegen/TODO.md`. |
-| 7 | Integration tests | new crate | Large | Medium | Conceptually straightforward (Pulumi.yaml + automation API), but requires CI infrastructure, provider plugins, and careful cleanup of cloud resources |
-| 8 | crates.io publishing | all | Medium | Easy | Mostly process work: audit public API, set up workspace versioning, cargo-release workflow, publish-order automation |
+| 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | `orchestrator.rs`, `engine_service.rs`, and `monitor_service.rs` have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
+| 6 | Code generation | `pulumi-codegen` | XL | Very Hard | **DONE.** Core pipeline complete (Stages 1–6). Asset/Archive types now use `pulumi::Asset`/`pulumi::Archive`. Remaining: union types (#9), larger provider validation (#10). See `pulumi-codegen/TODO.md`. |
+| 7 | Integration tests | new crate | Large | Medium | End-to-end tests using `pulumi-random` + automation API: resource registration, `Output<T>` combinators, secrets, config, stack references, resource options, error cases. Gate behind `--features integration` or a separate workspace member. |
+| 8 | crates.io publishing | all | Medium | Easy | Audit re-exports in `pulumi/src/lib.rs`, add crate-level docs and README, set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
+| 9 | Codegen union types | `pulumi-codegen` | Medium | Hard | `oneOf` currently emits `serde_json::Value`; generate proper Rust enums with `#[derive(Serialize, Deserialize)]` and `#[serde(untagged)]` or discriminated variants instead |
+| 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
+| 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
 
 ## AI-Assisted Development: Effort vs Difficulty
 
@@ -26,52 +29,18 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
 | 1 | Unit test coverage | Many tests to write, but each is independent → moderate total | Low peak — patterns are repetitive, mocks already exist |
-| 2 | TestContext builder | Moderate total — one API surface to build | Moderate peak — mock layer + public API design need to be in context together | **DONE** |
-| 3 | Transforms | Moderate total — not a lot of code | High peak — orchestrator + registration flow + ordering semantics all need to be in-context simultaneously | **DONE** |
-| 4 | NativeStack parity | Moderate total — filling in missing features one by one | Moderate peak — need CLI Stack as reference while building NativeStack | **DONE** |
+| 2 | TestContext builder | Moderate total — one API surface to build | Moderate peak — mock layer + public API design need to be in context together |
+| 3 | Transforms | Moderate total — not a lot of code | High peak — orchestrator + registration flow + ordering semantics all need to be in-context simultaneously |
+| 4 | NativeStack parity | Moderate total — filling in missing features one by one | Moderate peak — need CLI Stack as reference while building NativeStack |
 | 5 | Engine test coverage | Moderate total — similar scope to #1 | Moderate peak — gRPC server setup and service internals must be understood together |
 | 6 | Code generation | Very high total — massive code output across many files | High peak — schema mapping, naming rules, type system all in-context at once |
 | 7 | Integration tests | High total — many test programs to write | Moderate peak — each test is self-contained |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
+| 9 | Codegen union types | Moderate total — ir.rs + emit.rs + tests | High peak — must hold `oneOf` semantics, enum generation, serde representation, and existing type system simultaneously |
+| 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
+| 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
 
 ---
-
-## Mock / Test Framework
-
-**Purpose:** Let users unit-test their Pulumi programs without deploying anything.
-
-**Status: PARTIALLY DONE.**
-
-Steps 1 and 2 are complete. `connection.rs` provides `MonitorConnection` and
-`EngineConnection` traits with `GrpcMonitor`/`GrpcEngine` (real) and
-`MockMonitor`/`MockEngine` (test) implementations. `Context` is now generic
-over these traits, so mock clients can be injected without gRPC or env vars.
-
-**Remaining work:**
-
-1. **`TestContext`** constructor that wires up mock clients without needing
-   `PULUMI_*` env vars or network connections:
-   ```rust
-   let ctx = TestContext::new()
-       .with_resource_response::<S3Bucket>("my-bucket", mock_outputs)
-       .build();
-   ```
-
-2. **Assertion helpers** to inspect what was registered:
-   ```rust
-   let registrations = ctx.registered_resources();
-   assert_eq!(registrations[0].type_token, "aws:s3/bucket:Bucket");
-   assert_eq!(registrations[0].name, "my-bucket");
-   ```
-
-3. **Preview-mode simulation.** In preview, outputs are "unknown". The mock
-   framework should support returning unknowns so users can test that their
-   `Output::map` / `Output::flat_map` chains handle unknown values correctly.
-
-**What remains to change:**
-- New `pulumi-test` crate (or `pulumi-core/src/test_support.rs` behind a
-  `test-support` feature) with `TestContext` and assertion utilities
-- Flesh out `MockMonitor` with configurable per-resource responses
 
 ## Integration Tests
 
@@ -158,8 +127,8 @@ keep in sync with upstream schema changes.
    | `array<T>` | `Vec<T>` |
    | `map<T>` | `HashMap<String, T>` |
    | `object` (named) | Generated struct |
-   | `union` | Generated enum |
-   | `Asset` / `Archive` | SDK asset types (TBD) |
+   | `union` (`oneOf`) | Generated enum (see #9) |
+   | `Asset` / `Archive` | `pulumi::Asset` / `pulumi::Archive` |
    | optional property | `Option<T>` |
 
 5. **Versioning:** Generated crates pin to a specific provider plugin version

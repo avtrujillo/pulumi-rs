@@ -2,25 +2,33 @@
 
 ## Native Engine Support
 
-Add a `--native` flag or `native-engine` feature to use `NativeStack` from
-`pulumi-automation` instead of spawning the `pulumi` CLI binary. This would
-allow fully self-contained Rust-native Pulumi operations without requiring the
-Go-based CLI to be installed.
+**DONE.** `--native` flag (and `native-engine` feature) added to `up`, `preview`,
+`destroy`, and `refresh` commands. When passed, the command uses `NativeStack` from
+`pulumi-automation` instead of spawning the Go-based `pulumi` CLI binary. A
+`--program` flag selects the binary path; without it the current working directory
+is used.
 
 ## Additional Commands
 
-- `logs` — show resource logs
-- `whoami` — show current identity
-- `plugin` — manage provider plugins
+**DONE.** Added:
+- `whoami` — shows current identity via `LocalWorkspace::whoami()`
+- `logs --stack <NAME>` — shows resource logs via `LocalWorkspace::logs()`
+- `plugin ls` — lists installed provider plugins
+- `plugin install <NAME> <VERSION>` — installs a provider plugin
+- `plugin rm <NAME>` — removes a provider plugin
 
 ## Output Formatting
 
-- Add colored output for better readability (currently uses `NO_COLOR=1`)
-- Show resource diffs during `preview` output
+**DONE.**
+- Colored `Error:` prefix on all error messages (`colored` crate)
+- `format_diff_events()` renders `ResourcePreEvent` list as colored `+`/`-`/`~` diffs
+  during `preview` output
 
 ## Tests
 
-- Integration tests that verify command output format
+- 36 unit tests added to `main.rs` covering command output format and diff rendering
+- Integration tests that verify end-to-end command behavior against a real workspace
+  remain as future work
 
 ## Edition
 

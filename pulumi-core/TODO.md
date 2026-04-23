@@ -9,12 +9,11 @@ See the root TODO.md for rationale.
 
 ## Flesh Out Mock Implementations
 
-`MockMonitor` and `MockEngine` in `connection.rs` exist but are minimal.
-Extend them to support:
-- Configurable per-resource responses (canned outputs keyed by resource type/name)
-- Recording of all calls for assertion
-- Preview-mode simulation (returning unknowns)
+`MockMonitor` and `MockEngine` in `connection.rs` have configurable per-resource
+responses, preview-mode simulation (returning unknowns), and basic call recording
+via `TestContext`. Remaining (see root TODO.md #11):
 - Error injection for testing error paths
+- Full call recording directly on `MockMonitor` for assertions without `TestContext`
 
 ## Test Coverage
 
