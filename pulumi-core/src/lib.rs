@@ -68,6 +68,7 @@
 //! - [`InvokeBuilder`] — Builder to invoke a [`ProviderFunction`]; implements [`IntoFuture`](std::future::IntoFuture)
 //! - [`Error`] / [`Result`] — Error handling
 
+pub mod asset;
 pub mod connection;
 pub mod context;
 pub mod error;
@@ -105,6 +106,7 @@ pub use resource::{
     ReadBuilder, RegisteredComponent, RegisteredRemoteComponent, RegisteredResource,
     RemoteComponent, RemoteComponentBuilder, Resource, ResourceBuilder, ResourceOptions,
 };
+pub use asset::{Archive, Asset};
 pub use stack_reference::{StackReference, StackReferenceBuilder};
 pub use transform::{TransformArgs, TransformFn, TransformResult, register_stack_transform};
 

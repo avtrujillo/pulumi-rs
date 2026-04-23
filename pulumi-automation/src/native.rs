@@ -147,10 +147,7 @@ impl NativeStack {
     pub async fn up(&self) -> Result<UpResult> {
         let opts = self.engine_options(false);
         let engine = PulumiEngine::new(opts);
-        let result = engine
-            .up()
-            .await
-            .map_err(|e| Error::Custom(e.to_string()))?;
+        let result = engine.up().await?;
 
         let outputs = convert_outputs(&result.outputs);
         let events = convert_events(result.events);
@@ -167,10 +164,7 @@ impl NativeStack {
     pub async fn preview(&self) -> Result<crate::stack::PreviewResult> {
         let opts = self.engine_options(true);
         let engine = PulumiEngine::new(opts);
-        let result = engine
-            .preview()
-            .await
-            .map_err(|e| Error::Custom(e.to_string()))?;
+        let result = engine.preview().await?;
 
         Ok(crate::stack::PreviewResult {
             stdout: result.stdout,
@@ -183,10 +177,7 @@ impl NativeStack {
     pub async fn destroy(&self) -> Result<crate::stack::DestroyResult> {
         let opts = self.engine_options(false);
         let engine = PulumiEngine::new(opts);
-        let result = engine
-            .destroy()
-            .await
-            .map_err(|e| Error::Custom(e.to_string()))?;
+        let result = engine.destroy().await?;
 
         Ok(crate::stack::DestroyResult {
             stdout: result.stdout,
@@ -199,10 +190,7 @@ impl NativeStack {
     pub async fn refresh(&self) -> Result<crate::stack::RefreshResult> {
         let opts = self.engine_options(false);
         let engine = PulumiEngine::new(opts);
-        let result = engine
-            .refresh()
-            .await
-            .map_err(|e| Error::Custom(e.to_string()))?;
+        let result = engine.refresh().await?;
 
         Ok(crate::stack::RefreshResult {
             stdout: result.stdout,

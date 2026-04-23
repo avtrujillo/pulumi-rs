@@ -24,6 +24,40 @@ pub struct StackSummary {
     pub resource_count: Option<i64>,
 }
 
+/// Result of a `pulumi whoami` call.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct WhoAmIResult {
+    /// The authenticated username.
+    pub user: String,
+    /// The backend URL (e.g. `https://api.pulumi.com`).
+    pub url: Option<String>,
+    /// Organizations the user belongs to.
+    #[serde(default)]
+    pub organizations: Vec<String>,
+}
+
+/// Information about an installed Pulumi plugin.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInfo {
+    /// Plugin name (e.g. `aws`).
+    pub name: String,
+    /// Plugin kind (e.g. `resource`).
+    pub kind: String,
+    /// Plugin version (e.g. `6.0.0`).
+    pub version: String,
+    /// Installed file size in bytes.
+    pub size: Option<i64>,
+    /// When the plugin was installed.
+    pub install_time: Option<String>,
+    /// When the plugin was last used.
+    pub last_used_time: Option<String>,
+    /// Path to the plugin binary directory.
+    pub path: Option<String>,
+    /// Path to the plugin schema file.
+    pub schema_path: Option<String>,
+}
+
 /// A local workspace backed by a Pulumi project directory on disk.
 ///
 /// This is the main entry point for the Automation API. It corresponds to a
@@ -185,5 +219,67 @@ impl LocalWorkspace {
     #[cfg(feature = "native-engine")]
     pub fn native_stack(&self, name: &str, program: Vec<String>) -> crate::native::NativeStack {
         crate::native::NativeStack::new(self.clone(), name.to_string(), program)
+    }
+
+    /// Returns information about the currently logged-in Pulumi user.
+    pub async fn whoami(&self) -> Result<WhoAmIResult> {
+        let output =
+            run_pulumi_cmd(&self.work_dir, &["whoami", "--json"], &self.env_pairs()).await?;
+        let result: WhoAmIResult = serde_json::from_str(&output.stdout)?;
+        Ok(result)
+    }
+
+    /// Returns the log output for the given stack.
+    pub async fn logs(&self, stack: &str) -> Result<String> {
+        let output = run_pulumi_cmd(
+            &self.work_dir,
+            &["logs", "--stack", stack],
+            &self.env_pairs(),
+        )
+        .await?;
+        Ok(output.stdout)
+    }
+
+    /// Lists all installed Pulumi plugins.
+    pub async fn list_plugins(&self) -> Result<Vec<PluginInfo>> {
+        let output = run_pulumi_cmd(
+            &self.work_dir,
+            &["plugin", "ls", "--json"],
+            &self.env_pairs(),
+        )
+        .await?;
+        let plugins: Vec<PluginInfo> = serde_json::from_str(&output.stdout)?;
+        Ok(plugins)
+    }
+
+    /// Installs a Pulumi plugin.
+    ///
+    /// `kind` is typically `"resource"` or `"language"`. Example: `install_plugin("resource", "aws", "6.0.0")`.
+    pub async fn install_plugin(&self, kind: &str, name: &str, version: &str) -> Result<()> {
+        run_pulumi_cmd(
+            &self.work_dir,
+            &["plugin", "install", kind, name, version],
+            &self.env_pairs(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Removes a Pulumi plugin.
+    ///
+    /// `version` is optional; if `None`, removes all versions of the plugin.
+    pub async fn remove_plugin(
+        &self,
+        kind: &str,
+        name: &str,
+        version: Option<&str>,
+    ) -> Result<()> {
+        let args: Vec<&str> = if let Some(ver) = version {
+            vec!["plugin", "rm", kind, name, ver, "--yes"]
+        } else {
+            vec!["plugin", "rm", kind, name, "--yes"]
+        };
+        run_pulumi_cmd(&self.work_dir, &args, &self.env_pairs()).await?;
+        Ok(())
     }
 }
