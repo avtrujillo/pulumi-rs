@@ -24,8 +24,8 @@ Update this table as stages are completed.
 
 ## Future Work
 
-- [ ] **Proper union types** — `oneOf` currently emits `serde_json::Value`; generate proper Rust enums instead
-- [ ] **Asset/Archive types** — currently `serde_json::Value`; use dedicated SDK types once `pulumi-core` adds them
+- [x] **Proper union types** — `oneOf` now generates named `#[serde(untagged)]` Rust enums in `crate::types`
+- [x] **Asset/Archive types** — `pulumi-core` now provides `Asset` and `Archive` enums (re-exported as `pulumi::Asset` / `pulumi::Archive`); codegen emits these types for `pulumi.json#/Asset` and `pulumi.json#/Archive` refs
 - [ ] **Validate against larger providers** — only tested with `pulumi-random`; test with docker, AWS, and other providers that exercise deeply nested modules, complex type references, and edge cases
 - [ ] **Publish `pulumi` to crates.io** — generated crates default to `pulumi = "0.1"` which doesn't exist yet; the `--pulumi-crate-path` flag works around this for local dev
 
