@@ -1,0 +1,15 @@
+[package]
+name = "pulumi-test-basic-resource"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "pulumi-test-basic-resource"
+path = "src/main.rs"
+
+[dependencies]
+pulumi = { path = "../../../pulumi" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

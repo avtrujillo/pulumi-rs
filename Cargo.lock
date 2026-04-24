@@ -717,6 +717,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pulumi-automation",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1070,6 +1081,35 @@ dependencies = [
  "serde",
  "syn",
  "trybuild",
+]
+
+[[package]]
+name = "pulumi-test-basic-resource"
+version = "0.1.0"
+dependencies = [
+ "pulumi",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "pulumi-test-config"
+version = "0.1.0"
+dependencies = [
+ "pulumi",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "pulumi-test-secrets"
+version = "0.1.0"
+dependencies = [
+ "pulumi",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
