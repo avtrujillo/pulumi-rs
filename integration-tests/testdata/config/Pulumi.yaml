@@ -1,0 +1,6 @@
+name: config
+runtime:
+  name: binary
+  options:
+    command: ../../../target/debug/pulumi-test-config
+description: Integration test — reading config values inside a Pulumi program

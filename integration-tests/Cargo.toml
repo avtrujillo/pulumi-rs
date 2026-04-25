@@ -1,0 +1,33 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+integration = []
+
+[dependencies]
+pulumi-automation = { path = "../pulumi-automation" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }
+tempfile = "3"
+serde_json = "1"
+anyhow = "1"
+
+[[test]]
+name = "basic_resource"
+path = "tests/basic_resource.rs"
+required-features = ["integration"]
+
+[[test]]
+name = "config"
+path = "tests/config.rs"
+required-features = ["integration"]
+
+[[test]]
+name = "secrets"
+path = "tests/secrets.rs"
+required-features = ["integration"]
+
+[lib]
+doctest = false

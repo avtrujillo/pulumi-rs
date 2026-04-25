@@ -1,0 +1,6 @@
+name: basic-resource
+runtime:
+  name: binary
+  options:
+    command: ../../../target/debug/pulumi-test-basic-resource
+description: Integration test — basic resource creation with random:RandomString

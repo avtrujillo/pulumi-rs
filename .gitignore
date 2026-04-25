@@ -1,1 +1,5 @@
 /target
+# testdata programs are workspace members — their build output goes to the
+# workspace /target, but guard against stale standalone-build artifacts.
+integration-tests/testdata/*/target/
+integration-tests/testdata/*/Cargo.lock
