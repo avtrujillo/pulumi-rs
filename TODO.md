@@ -4,7 +4,6 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 5a | Refactor engine services into handler + shim | `pulumi-engine` | Medium | Medium | Split `monitor_service.rs` and `engine_service.rs` into thin `tonic` trait shims (unwrap `Request`, call handler, wrap `Response`) plus handler methods that take plain prost types and return `Result<T, Status>`. Streaming RPCs (`RegisterResourceOutputs`, transform callbacks) stay in the shim. Prerequisite for 5b. |
 | 5b | Engine test coverage | `pulumi-engine` | Medium | Low | Depends on 5a. Add `TestEngine` harness in `test_utils.rs` (spawns both services in-process on ephemeral ports, returns `(client, Arc<EngineState>)`). Default to direct handler-call tests; use in-process server for streaming RPCs and one happy/error-path smoke test per service to cover shim wiring. Targets `orchestrator.rs`, `engine_service.rs`, `monitor_service.rs`. |
 | 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
@@ -22,7 +21,7 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
-| 5a | Refactor engine services into handler + shim | Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided | Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly |
+| ~~5a~~ | ~~Refactor engine services into handler + shim~~ | ~~Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided~~ | ~~Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly~~ |
 | 5b | Engine test coverage | Moderate total — many handler-level tests plus harness | Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused |
 | ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
@@ -30,6 +29,24 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 | 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
 
 ---
+
+## Engine Service Handler/Shim Refactor ✓ Done
+
+**Crate:** `pulumi-engine`
+
+`monitor_service.rs` and `engine_service.rs` are split into:
+
+- **Handler methods** (`pub(crate) async fn handle_*`) on the inherent
+  `impl ResourceMonitorImpl<P>` / `impl EngineServiceImpl` blocks. Take plain
+  prost types, return `Result<T, Status>`. Contain all the actual logic.
+- **Tonic trait shims**: 4-line wrappers that unwrap `Request<T>`, call the
+  handler, and wrap the result in `Response<T>`. No business logic.
+
+Existing unit tests now call handlers directly (no `Request::new(...)` /
+`Response::into_inner()` boilerplate, no need to import the gRPC service
+trait). All 67 tests pass.
+
+This is the prerequisite for 5b: `TestEngine` harness + expanded coverage.
 
 ## Integration Tests ✓ Done
 

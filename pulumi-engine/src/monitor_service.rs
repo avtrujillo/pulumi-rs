@@ -3,6 +3,14 @@
 //! Handles resource registration, invocations, and feature queries from the
 //! Pulumi program. Routes CRUD operations to provider plugins via the
 //! [`Provider`](crate::provider::Provider) trait.
+//!
+//! ## Handler / shim split
+//!
+//! The actual logic for each RPC lives in `handle_*` methods on the inherent
+//! `impl ResourceMonitorImpl<P>` block. The `tonic` trait `impl` is a thin
+//! shim that unwraps `Request<T>`, calls the handler, and wraps the result in
+//! `Response<T>`. Tests can call the handlers directly with plain prost types
+//! without going through the gRPC layer.
 
 use crate::diff::{self, ResourceAction};
 use crate::events::{self, EventCollector};
@@ -170,42 +178,44 @@ impl<P: Provider> ResourceMonitorImpl<P> {
         }
         Ok(args)
     }
-}
 
-#[tonic::async_trait]
-impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl<P> {
-    async fn supports_feature(
+    // -----------------------------------------------------------------------
+    // Handler methods.
+    //
+    // These contain the actual logic for each RPC, take plain prost types,
+    // and return `Result<T, Status>`. The tonic trait `impl` below is a thin
+    // shim that delegates to these.
+    // -----------------------------------------------------------------------
+
+    pub(crate) async fn handle_supports_feature(
         &self,
-        request: Request<pulumirpc::SupportsFeatureRequest>,
-    ) -> Result<Response<pulumirpc::SupportsFeatureResponse>, Status> {
-        let feature = request.into_inner().id;
+        req: pulumirpc::SupportsFeatureRequest,
+    ) -> Result<pulumirpc::SupportsFeatureResponse, Status> {
         let supported = matches!(
-            feature.as_str(),
+            req.id.as_str(),
             "secrets" | "resourceReferences" | "outputValues" | "aliasSpecs"
         );
-        Ok(Response::new(pulumirpc::SupportsFeatureResponse {
+        Ok(pulumirpc::SupportsFeatureResponse {
             has_support: supported,
-        }))
+        })
     }
 
-    async fn invoke(
+    pub(crate) async fn handle_invoke(
         &self,
-        request: Request<pulumirpc::ResourceInvokeRequest>,
-    ) -> Result<Response<pulumirpc::InvokeResponse>, Status> {
-        let mut req = request.into_inner();
-
+        mut req: pulumirpc::ResourceInvokeRequest,
+    ) -> Result<pulumirpc::InvokeResponse, Status> {
         // Apply registered invoke transforms before calling the provider.
         req.args = self.apply_invoke_transforms(&req.tok, req.args).await?;
 
         let package = match provider::package_name_from_token(&req.tok) {
             Some(pkg) => pkg,
             None => {
-                return Ok(Response::new(pulumirpc::InvokeResponse {
+                return Ok(pulumirpc::InvokeResponse {
                     r#return: Some(prost_types::Struct {
                         fields: Default::default(),
                     }),
                     failures: vec![],
-                }));
+                });
             }
         };
 
@@ -224,25 +234,23 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             .await
             .map_err(|e| Status::internal(format!("provider invoke failed: {e}")))?;
 
-        Ok(Response::new(resp))
+        Ok(resp)
     }
 
-    async fn call(
+    pub(crate) async fn handle_call(
         &self,
-        request: Request<pulumirpc::ResourceCallRequest>,
-    ) -> Result<Response<pulumirpc::CallResponse>, Status> {
-        let req = request.into_inner();
-
+        req: pulumirpc::ResourceCallRequest,
+    ) -> Result<pulumirpc::CallResponse, Status> {
         let package = match provider::package_name_from_token(&req.tok) {
             Some(pkg) => pkg,
             None => {
-                return Ok(Response::new(pulumirpc::CallResponse {
+                return Ok(pulumirpc::CallResponse {
                     r#return: Some(prost_types::Struct {
                         fields: Default::default(),
                     }),
                     failures: vec![],
                     return_dependencies: Default::default(),
-                }));
+                });
             }
         };
 
@@ -271,14 +279,13 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             .await
             .map_err(|e| Status::internal(format!("provider call failed: {e}")))?;
 
-        Ok(Response::new(resp))
+        Ok(resp)
     }
 
-    async fn read_resource(
+    pub(crate) async fn handle_read_resource(
         &self,
-        request: Request<pulumirpc::ReadResourceRequest>,
-    ) -> Result<Response<pulumirpc::ReadResourceResponse>, Status> {
-        let req = request.into_inner();
+        req: pulumirpc::ReadResourceRequest,
+    ) -> Result<pulumirpc::ReadResourceResponse, Status> {
         let urn = self
             .state
             .make_urn(&req.r#type, &req.name, &req.parent)
@@ -309,18 +316,13 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             req.properties
         };
 
-        Ok(Response::new(pulumirpc::ReadResourceResponse {
-            urn,
-            properties,
-        }))
+        Ok(pulumirpc::ReadResourceResponse { urn, properties })
     }
 
-    async fn register_resource(
+    pub(crate) async fn handle_register_resource(
         &self,
-        request: Request<pulumirpc::RegisterResourceRequest>,
-    ) -> Result<Response<pulumirpc::RegisterResourceResponse>, Status> {
-        let mut req = request.into_inner();
-
+        mut req: pulumirpc::RegisterResourceRequest,
+    ) -> Result<pulumirpc::RegisterResourceResponse, Status> {
         // Apply registered stack transforms before any other processing.
         let (transformed_object, transformed_ignore, transformed_secrets) = self
             .apply_transforms(
@@ -516,7 +518,7 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
         };
         self.state.register_resource(resource_state).await;
 
-        Ok(Response::new(pulumirpc::RegisterResourceResponse {
+        Ok(pulumirpc::RegisterResourceResponse {
             urn,
             id,
             object: output_properties,
@@ -524,15 +526,13 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
             stables: vec![],
             property_dependencies: Default::default(),
             result: 0,
-        }))
+        })
     }
 
-    async fn register_resource_outputs(
+    pub(crate) async fn handle_register_resource_outputs(
         &self,
-        request: Request<pulumirpc::RegisterResourceOutputsRequest>,
-    ) -> Result<Response<()>, Status> {
-        let req = request.into_inner();
-
+        req: pulumirpc::RegisterResourceOutputsRequest,
+    ) -> Result<(), Status> {
         let root_urn = self.state.get_root_urn().await;
         if req.urn == root_urn
             && let Some(outputs) = &req.outputs
@@ -541,7 +541,102 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
                 .set_stack_outputs(proto_struct_to_json(outputs))
                 .await;
         }
+        Ok(())
+    }
 
+    pub(crate) async fn handle_register_stack_transform(
+        &self,
+        callback: pulumirpc::Callback,
+    ) -> Result<(), Status> {
+        self.transforms.lock().await.push(callback);
+        Ok(())
+    }
+
+    pub(crate) async fn handle_register_stack_invoke_transform(
+        &self,
+        callback: pulumirpc::Callback,
+    ) -> Result<(), Status> {
+        self.invoke_transforms.lock().await.push(callback);
+        Ok(())
+    }
+
+    pub(crate) async fn handle_register_resource_hook(
+        &self,
+        _req: pulumirpc::RegisterResourceHookRequest,
+    ) -> Result<(), Status> {
+        Ok(())
+    }
+
+    pub(crate) async fn handle_register_error_hook(
+        &self,
+        _req: pulumirpc::RegisterErrorHookRequest,
+    ) -> Result<(), Status> {
+        Ok(())
+    }
+
+    pub(crate) async fn handle_register_package(
+        &self,
+        req: pulumirpc::RegisterPackageRequest,
+    ) -> Result<pulumirpc::RegisterPackageResponse, Status> {
+        let package_ref = format!("{}@{}", req.name, req.version);
+        Ok(pulumirpc::RegisterPackageResponse {
+            r#ref: package_ref,
+        })
+    }
+
+    pub(crate) async fn handle_signal_and_wait_for_shutdown(&self) -> Result<(), Status> {
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for ResourceMonitorImpl<P> {
+    async fn supports_feature(
+        &self,
+        request: Request<pulumirpc::SupportsFeatureRequest>,
+    ) -> Result<Response<pulumirpc::SupportsFeatureResponse>, Status> {
+        let resp = self.handle_supports_feature(request.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn invoke(
+        &self,
+        request: Request<pulumirpc::ResourceInvokeRequest>,
+    ) -> Result<Response<pulumirpc::InvokeResponse>, Status> {
+        let resp = self.handle_invoke(request.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn call(
+        &self,
+        request: Request<pulumirpc::ResourceCallRequest>,
+    ) -> Result<Response<pulumirpc::CallResponse>, Status> {
+        let resp = self.handle_call(request.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn read_resource(
+        &self,
+        request: Request<pulumirpc::ReadResourceRequest>,
+    ) -> Result<Response<pulumirpc::ReadResourceResponse>, Status> {
+        let resp = self.handle_read_resource(request.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn register_resource(
+        &self,
+        request: Request<pulumirpc::RegisterResourceRequest>,
+    ) -> Result<Response<pulumirpc::RegisterResourceResponse>, Status> {
+        let resp = self.handle_register_resource(request.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn register_resource_outputs(
+        &self,
+        request: Request<pulumirpc::RegisterResourceOutputsRequest>,
+    ) -> Result<Response<()>, Status> {
+        self.handle_register_resource_outputs(request.into_inner())
+            .await?;
         Ok(Response::new(()))
     }
 
@@ -549,7 +644,8 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
         &self,
         request: Request<pulumirpc::Callback>,
     ) -> Result<Response<()>, Status> {
-        self.transforms.lock().await.push(request.into_inner());
+        self.handle_register_stack_transform(request.into_inner())
+            .await?;
         Ok(Response::new(()))
     }
 
@@ -557,21 +653,26 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
         &self,
         request: Request<pulumirpc::Callback>,
     ) -> Result<Response<()>, Status> {
-        self.invoke_transforms.lock().await.push(request.into_inner());
+        self.handle_register_stack_invoke_transform(request.into_inner())
+            .await?;
         Ok(Response::new(()))
     }
 
     async fn register_resource_hook(
         &self,
-        _request: Request<pulumirpc::RegisterResourceHookRequest>,
+        request: Request<pulumirpc::RegisterResourceHookRequest>,
     ) -> Result<Response<()>, Status> {
+        self.handle_register_resource_hook(request.into_inner())
+            .await?;
         Ok(Response::new(()))
     }
 
     async fn register_error_hook(
         &self,
-        _request: Request<pulumirpc::RegisterErrorHookRequest>,
+        request: Request<pulumirpc::RegisterErrorHookRequest>,
     ) -> Result<Response<()>, Status> {
+        self.handle_register_error_hook(request.into_inner())
+            .await?;
         Ok(Response::new(()))
     }
 
@@ -579,17 +680,15 @@ impl<P: Provider> pulumirpc::resource_monitor_server::ResourceMonitor for Resour
         &self,
         request: Request<pulumirpc::RegisterPackageRequest>,
     ) -> Result<Response<pulumirpc::RegisterPackageResponse>, Status> {
-        let req = request.into_inner();
-        let package_ref = format!("{}@{}", req.name, req.version);
-        Ok(Response::new(pulumirpc::RegisterPackageResponse {
-            r#ref: package_ref,
-        }))
+        let resp = self.handle_register_package(request.into_inner()).await?;
+        Ok(Response::new(resp))
     }
 
     async fn signal_and_wait_for_shutdown(
         &self,
         _request: Request<()>,
     ) -> Result<Response<()>, Status> {
+        self.handle_signal_and_wait_for_shutdown().await?;
         Ok(Response::new(()))
     }
 }
@@ -618,8 +717,6 @@ mod tests {
     use crate::provider::ProviderManager;
     use crate::state::EngineState;
     use crate::test_utils::MockProvider;
-    use pulumirpc::resource_monitor_server::ResourceMonitor;
-    use tonic::Request;
 
     fn make_monitor(dry_run: bool) -> ResourceMonitorImpl<MockProvider> {
         let state = EngineState::new("test".into(), "dev".into());
@@ -640,12 +737,12 @@ mod tests {
         let svc = make_monitor(false);
         for feature in ["secrets", "resourceReferences", "outputValues", "aliasSpecs"] {
             let resp = svc
-                .supports_feature(Request::new(pulumirpc::SupportsFeatureRequest {
+                .handle_supports_feature(pulumirpc::SupportsFeatureRequest {
                     id: feature.into(),
-                }))
+                })
                 .await
                 .unwrap();
-            assert!(resp.into_inner().has_support, "{feature} should be supported");
+            assert!(resp.has_support, "{feature} should be supported");
         }
     }
 
@@ -653,12 +750,12 @@ mod tests {
     async fn test_unsupported_feature_returns_false() {
         let svc = make_monitor(false);
         let resp = svc
-            .supports_feature(Request::new(pulumirpc::SupportsFeatureRequest {
+            .handle_supports_feature(pulumirpc::SupportsFeatureRequest {
                 id: "unknownFeature".into(),
-            }))
+            })
             .await
             .unwrap();
-        assert!(!resp.into_inner().has_support);
+        assert!(!resp.has_support);
     }
 
     // --- register_resource (builtin / component / dry_run) ---
@@ -667,82 +764,78 @@ mod tests {
     async fn test_register_builtin_stack_resource() {
         let svc = make_monitor(false);
         let resp = svc
-            .register_resource(Request::new(pulumirpc::RegisterResourceRequest {
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
                 r#type: "pulumi:pulumi:Stack".into(),
                 name: "dev".into(),
                 custom: false,
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
-        assert!(inner.urn.contains("pulumi:pulumi:Stack"));
-        assert!(inner.urn.contains("dev"));
-        assert!(inner.id.is_empty());
+        assert!(resp.urn.contains("pulumi:pulumi:Stack"));
+        assert!(resp.urn.contains("dev"));
+        assert!(resp.id.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_component_resource_no_provider() {
         let svc = make_monitor(false);
         let resp = svc
-            .register_resource(Request::new(pulumirpc::RegisterResourceRequest {
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
                 r#type: "my:module:Component".into(),
                 name: "comp".into(),
                 custom: false,
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
-        assert!(inner.id.is_empty());
-        assert!(inner.urn.contains("my:module:Component::comp"));
+        assert!(resp.id.is_empty());
+        assert!(resp.urn.contains("my:module:Component::comp"));
     }
 
     #[tokio::test]
     async fn test_register_custom_resource_dry_run_skips_provider() {
         let svc = make_monitor(true);
         let resp = svc
-            .register_resource(Request::new(pulumirpc::RegisterResourceRequest {
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
                 r#type: "aws:s3/bucket:Bucket".into(),
                 name: "my-bucket".into(),
                 custom: true,
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
-        assert!(!inner.urn.is_empty());
+        assert!(!resp.urn.is_empty());
         // Dry run: no provider create called, so no real ID assigned.
-        assert!(inner.id.is_empty());
+        assert!(resp.id.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_custom_resource_non_dry_run_gets_id() {
         let svc = make_monitor(false);
         let resp = svc
-            .register_resource(Request::new(pulumirpc::RegisterResourceRequest {
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
                 r#type: "aws:s3/bucket:Bucket".into(),
                 name: "my-bucket".into(),
                 custom: true,
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
         // MockProvider::create returns "mock-id-<name>".
-        assert!(!inner.id.is_empty());
+        assert!(!resp.id.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_resource_stores_in_state() {
         let state = EngineState::new("test".into(), "dev".into());
         let svc = make_monitor_with_state(state.clone(), false);
-        svc.register_resource(Request::new(pulumirpc::RegisterResourceRequest {
+        svc.handle_register_resource(pulumirpc::RegisterResourceRequest {
             r#type: "pulumi:pulumi:Stack".into(),
             name: "stack".into(),
             custom: false,
             ..Default::default()
-        }))
+        })
         .await
         .unwrap();
         let resources = state.get_resources().await;
@@ -768,12 +861,10 @@ mod tests {
                 )),
             },
         );
-        svc.register_resource_outputs(Request::new(
-            pulumirpc::RegisterResourceOutputsRequest {
-                urn: stack_urn.to_string(),
-                outputs: Some(prost_types::Struct { fields }),
-            },
-        ))
+        svc.handle_register_resource_outputs(pulumirpc::RegisterResourceOutputsRequest {
+            urn: stack_urn.to_string(),
+            outputs: Some(prost_types::Struct { fields }),
+        })
         .await
         .unwrap();
 
@@ -796,12 +887,10 @@ mod tests {
                 kind: Some(prost_types::value::Kind::StringValue("value".into())),
             },
         );
-        svc.register_resource_outputs(Request::new(
-            pulumirpc::RegisterResourceOutputsRequest {
-                urn: "urn:pulumi:dev::test::some:other:Resource::res".to_string(),
-                outputs: Some(prost_types::Struct { fields }),
-            },
-        ))
+        svc.handle_register_resource_outputs(pulumirpc::RegisterResourceOutputsRequest {
+            urn: "urn:pulumi:dev::test::some:other:Resource::res".to_string(),
+            outputs: Some(prost_types::Struct { fields }),
+        })
         .await
         .unwrap();
 
@@ -815,10 +904,10 @@ mod tests {
     #[tokio::test]
     async fn test_register_stack_transform_stored() {
         let svc = make_monitor(false);
-        svc.register_stack_transform(Request::new(pulumirpc::Callback {
+        svc.handle_register_stack_transform(pulumirpc::Callback {
             target: "127.0.0.1:12345".into(),
             token: "my-token".into(),
-        }))
+        })
         .await
         .unwrap();
         let transforms = svc.transforms.lock().await;
@@ -829,10 +918,10 @@ mod tests {
     #[tokio::test]
     async fn test_register_stack_invoke_transform_stored() {
         let svc = make_monitor(false);
-        svc.register_stack_invoke_transform(Request::new(pulumirpc::Callback {
+        svc.handle_register_stack_invoke_transform(pulumirpc::Callback {
             target: "127.0.0.1:12345".into(),
             token: "invoke-token".into(),
-        }))
+        })
         .await
         .unwrap();
         let transforms = svc.invoke_transforms.lock().await;
@@ -846,29 +935,27 @@ mod tests {
     async fn test_invoke_builtin_token_returns_empty_without_provider() {
         let svc = make_monitor(false);
         let resp = svc
-            .invoke(Request::new(pulumirpc::ResourceInvokeRequest {
+            .handle_invoke(pulumirpc::ResourceInvokeRequest {
                 tok: "pulumi:pulumi:getStack".into(),
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
-        assert!(inner.failures.is_empty());
-        assert!(inner.r#return.is_some());
+        assert!(resp.failures.is_empty());
+        assert!(resp.r#return.is_some());
     }
 
     #[tokio::test]
     async fn test_invoke_provider_token_delegates_to_provider() {
         let svc = make_monitor(false);
         let resp = svc
-            .invoke(Request::new(pulumirpc::ResourceInvokeRequest {
+            .handle_invoke(pulumirpc::ResourceInvokeRequest {
                 tok: "aws:ec2/getAmi:getAmi".into(),
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        let inner = resp.into_inner();
-        assert!(inner.failures.is_empty());
+        assert!(resp.failures.is_empty());
     }
 
     // --- register_package ---
@@ -877,13 +964,13 @@ mod tests {
     async fn test_register_package_returns_versioned_ref() {
         let svc = make_monitor(false);
         let resp = svc
-            .register_package(Request::new(pulumirpc::RegisterPackageRequest {
+            .handle_register_package(pulumirpc::RegisterPackageRequest {
                 name: "aws".into(),
                 version: "6.0.0".into(),
                 ..Default::default()
-            }))
+            })
             .await
             .unwrap();
-        assert_eq!(resp.into_inner().r#ref, "aws@6.0.0");
+        assert_eq!(resp.r#ref, "aws@6.0.0");
     }
 }
