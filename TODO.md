@@ -4,7 +4,8 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | `orchestrator.rs`, `engine_service.rs`, and `monitor_service.rs` have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
+| 5a | Refactor engine services into handler + shim | `pulumi-engine` | Medium | Medium | Split `monitor_service.rs` and `engine_service.rs` into thin `tonic` trait shims (unwrap `Request`, call handler, wrap `Response`) plus handler methods that take plain prost types and return `Result<T, Status>`. Streaming RPCs (`RegisterResourceOutputs`, transform callbacks) stay in the shim. Prerequisite for 5b. |
+| 5b | Engine test coverage | `pulumi-engine` | Medium | Low | Depends on 5a. Add `TestEngine` harness in `test_utils.rs` (spawns both services in-process on ephemeral ports, returns `(client, Arc<EngineState>)`). Default to direct handler-call tests; use in-process server for streaming RPCs and one happy/error-path smoke test per service to cover shim wiring. Targets `orchestrator.rs`, `engine_service.rs`, `monitor_service.rs`. |
 | 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 | 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
@@ -21,7 +22,8 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
-| 5 | Engine test coverage | Moderate total — similar scope to prior test coverage work | Moderate peak — gRPC server setup and service internals must be understood together |
+| 5a | Refactor engine services into handler + shim | Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided | Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly |
+| 5b | Engine test coverage | Moderate total — many handler-level tests plus harness | Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused |
 | ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
