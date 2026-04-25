@@ -5,7 +5,6 @@
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
 | 5 | Engine test coverage | `pulumi-engine` | Medium | Medium | `orchestrator.rs`, `engine_service.rs`, and `monitor_service.rs` have zero tests; requires standing up in-process gRPC servers or refactoring for testability |
-| 7 | Integration tests | new crate | Large | Medium | **Soft blocker:** depends on #8 (generated test crates default to `pulumi = "0.1"` which doesn't exist yet; use `--pulumi-crate-path` to work around locally). Also requires the `pulumi-random` provider plugin binary available on PATH in CI. End-to-end tests using `pulumi-random` + automation API: resource registration, `Output<T>` combinators, secrets, config, stack references, resource options, error cases. Gate behind `--features integration` or a separate workspace member. |
 | 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 | 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
@@ -23,45 +22,44 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
 | 5 | Engine test coverage | Moderate total — similar scope to prior test coverage work | Moderate peak — gRPC server setup and service internals must be understood together |
-| 7 | Integration tests | High total — many test programs to write | Moderate peak — each test is self-contained |
+| ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
 | 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
 
 ---
 
-## Integration Tests
+## Integration Tests ✓ Done
 
-**Purpose:** Validate the SDK end-to-end against a real Pulumi engine. Catch
-regressions in gRPC serialization, resource registration lifecycle, output
-resolution, stack exports, and error handling that unit tests with mocks can't.
+**Crate:** `integration-tests/` (workspace member, `publish = false`)
 
-**How they would work:**
+**Run:**
+```
+cargo test -p integration-tests --features integration
+```
+Tests skip gracefully when `pulumi` is not on PATH.
 
-1. **Test programs** in an `integration-tests/` directory, each a small Pulumi
-   project with `Pulumi.yaml` and a Rust binary that uses `pulumi::run()`.
+**Architecture:** `TestHarness` in `integration-tests/src/lib.rs` builds the
+testdata binary (`cargo build -p pulumi-test-<name>`), creates a throw-away
+local file-backend state dir (`PULUMI_BACKEND_URL=file://<tmpdir>`), inits a
+`dev` stack via `pulumi-automation`, then drives `up` / `destroy` /
+`remove_stack`.  Testdata programs live in `integration-tests/testdata/*/` and
+are workspace members (shared `target/`).
 
-2. **Use `pulumi-automation`** to drive each test: create a temp stack, run `up`,
-   assert on outputs, run `destroy`, remove the stack. This keeps tests
-   self-contained and cleanup automatic.
+**Implemented tests:**
+| Test | File | What it validates |
+|------|------|-------------------|
+| `basic_resource` | `tests/basic_resource.rs` | `random:RandomString` registered; `result` (16-char string) and `length` (16) in outputs |
+| `config` | `tests/config.rs` | Plain-text config set before `up`, read via `ctx.require_config`, exported and asserted |
+| `secrets` | `tests/secrets.rs` | `random:RandomPassword` registered; `result` marked `secret: true`; `length` output plain |
 
-3. **Provider choice:** Use `pulumi-random` or another lightweight provider that
-   doesn't require cloud credentials, so tests run in CI without secrets.
-
-4. **What to test:**
-   - Basic resource registration and output retrieval
-   - `Output<T>` combinator chains (`map`, `flat_map`, `all`)
-   - Secret propagation through the resource graph
-   - Config access (`get_config`, `require_config`)
-   - Stack references
-   - Resource options (parent, depends_on, protect, aliases)
-   - Error cases (missing required config, invalid inputs)
-   - Component resources with `register_resource_outputs`
-   - Provider function invocations (`invoke`)
-
-5. **CI gating:** These are slow (seconds per test), so gate them behind
-   `cargo test --features integration` or a separate `cargo test -p integration-tests`
-   workspace member that only runs in CI.
+**Remaining coverage gaps** (future work):
+- `Output<T>` combinator chains (`map`, `flat_map`, `all`)
+- Stack references
+- Resource options (parent, depends_on, protect, aliases)
+- Component resources with `register_resource_outputs`
+- Provider function invocations (`invoke`)
+- Error cases (missing required config, invalid inputs)
 
 ## Code Generation / Provider SDKs
 
