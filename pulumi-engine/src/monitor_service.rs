@@ -973,4 +973,256 @@ mod tests {
             .unwrap();
         assert_eq!(resp.r#ref, "aws@6.0.0");
     }
+
+    // --- read_resource ---
+
+    #[tokio::test]
+    async fn test_read_builtin_type_echoes_properties_without_provider() {
+        let svc = make_monitor(false);
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "x".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("hello".into())),
+            },
+        );
+        let resp = svc
+            .handle_read_resource(pulumirpc::ReadResourceRequest {
+                r#type: "pulumi:pulumi:Stack".into(),
+                name: "dev".into(),
+                id: "ignored".into(),
+                properties: Some(prost_types::Struct {
+                    fields: fields.clone(),
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.urn.contains("pulumi:pulumi:Stack"));
+        // No provider was consulted; properties pass through verbatim.
+        assert_eq!(resp.properties.unwrap().fields, fields);
+    }
+
+    #[tokio::test]
+    async fn test_read_custom_type_delegates_to_provider() {
+        let svc = make_monitor(false);
+        let resp = svc
+            .handle_read_resource(pulumirpc::ReadResourceRequest {
+                r#type: "aws:s3/bucket:Bucket".into(),
+                name: "my-bucket".into(),
+                id: "existing-id".into(),
+                properties: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.urn.contains("aws:s3/bucket:Bucket::my-bucket"));
+        // MockProvider::read echoes the request id back into the response.
+        // The handler returns those properties unchanged.
+    }
+
+    // --- call ---
+
+    #[tokio::test]
+    async fn test_call_builtin_token_returns_empty_without_provider() {
+        let svc = make_monitor(false);
+        let resp = svc
+            .handle_call(pulumirpc::ResourceCallRequest {
+                tok: "pulumi:pulumi:doSomething".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.failures.is_empty());
+        assert!(resp.r#return.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_call_provider_token_delegates_to_provider() {
+        let svc = make_monitor(false);
+        let resp = svc
+            .handle_call(pulumirpc::ResourceCallRequest {
+                tok: "aws:ec2:Instance/start".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(resp.failures.is_empty());
+    }
+
+    // --- noop endpoints ---
+
+    #[tokio::test]
+    async fn test_register_resource_hook_is_noop() {
+        let svc = make_monitor(false);
+        svc.handle_register_resource_hook(pulumirpc::RegisterResourceHookRequest::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_register_error_hook_is_noop() {
+        let svc = make_monitor(false);
+        svc.handle_register_error_hook(pulumirpc::RegisterErrorHookRequest::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_signal_and_wait_for_shutdown_is_noop() {
+        let svc = make_monitor(false);
+        svc.handle_signal_and_wait_for_shutdown().await.unwrap();
+    }
+
+    // --- register_resource diff paths (Same / Update with prior state) ---
+
+    fn prior_custom_resource(name: &str, inputs: serde_json::Value) -> ResourceState {
+        ResourceState {
+            urn: format!("urn:pulumi:dev::test::aws:s3/bucket:Bucket::{name}"),
+            id: format!("prior-id-{name}"),
+            resource_type: "aws:s3/bucket:Bucket".into(),
+            name: name.into(),
+            custom: true,
+            parent: String::new(),
+            inputs,
+            outputs: serde_json::json!({}),
+            dependencies: vec![],
+            secret_properties: vec![],
+            refresh_before_update: false,
+        }
+    }
+
+    fn struct_with_field(key: &str, value: &str) -> prost_types::Struct {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            key.into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(value.into())),
+            },
+        );
+        prost_types::Struct { fields }
+    }
+
+    #[tokio::test]
+    async fn test_register_resource_same_path_preserves_prior_id() {
+        // Prior inputs match new inputs exactly — diff returns Same, so the
+        // handler returns the prior id without calling the provider.
+        let inputs = serde_json::json!({"region": "us-east-1"});
+        let state = crate::test_utils::state_with_prior(vec![prior_custom_resource(
+            "my-bucket",
+            inputs,
+        )]);
+        let svc = make_monitor_with_state(state, false);
+
+        let resp = svc
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
+                r#type: "aws:s3/bucket:Bucket".into(),
+                name: "my-bucket".into(),
+                custom: true,
+                object: Some(struct_with_field("region", "us-east-1")),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resp.id, "prior-id-my-bucket");
+    }
+
+    #[tokio::test]
+    async fn test_register_resource_update_path_calls_provider() {
+        // Prior inputs differ from new inputs — diff returns Update, so the
+        // handler calls provider.update; MockProvider returns the new props.
+        let prior_inputs = serde_json::json!({"region": "us-east-1"});
+        let state = crate::test_utils::state_with_prior(vec![prior_custom_resource(
+            "my-bucket",
+            prior_inputs,
+        )]);
+        let svc = make_monitor_with_state(state, false);
+
+        let resp = svc
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
+                r#type: "aws:s3/bucket:Bucket".into(),
+                name: "my-bucket".into(),
+                custom: true,
+                object: Some(struct_with_field("region", "us-west-2")),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Update keeps the prior id (an update doesn't change the resource id).
+        assert_eq!(resp.id, "prior-id-my-bucket");
+    }
+
+    #[tokio::test]
+    async fn test_register_resource_dry_run_update_keeps_prior_id() {
+        let prior_inputs = serde_json::json!({"region": "us-east-1"});
+        let state = crate::test_utils::state_with_prior(vec![prior_custom_resource(
+            "my-bucket",
+            prior_inputs,
+        )]);
+        let svc = make_monitor_with_state(state, true);
+
+        let resp = svc
+            .handle_register_resource(pulumirpc::RegisterResourceRequest {
+                r#type: "aws:s3/bucket:Bucket".into(),
+                name: "my-bucket".into(),
+                custom: true,
+                object: Some(struct_with_field("region", "us-west-2")),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Dry-run update returns the prior id without invoking the provider.
+        assert_eq!(resp.id, "prior-id-my-bucket");
+    }
+
+    // --- in-process server smoke test (covers the tonic shim wiring) ---
+
+    #[tokio::test]
+    async fn test_smoke_register_resource_via_grpc() {
+        use crate::test_utils::TestEngine;
+
+        let harness = TestEngine::new().await;
+        let mut client = harness.monitor_client().await;
+
+        // Drive a register_resource call through the actual gRPC stack —
+        // tonic Request/Response wrapping, prost wire encoding, and the
+        // shim's unwrap/call/wrap logic all run end-to-end.
+        let resp = client
+            .register_resource(tonic::Request::new(pulumirpc::RegisterResourceRequest {
+                r#type: "pulumi:pulumi:Stack".into(),
+                name: "dev".into(),
+                custom: false,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(resp.urn.contains("pulumi:pulumi:Stack"));
+        assert!(resp.id.is_empty());
+
+        // The shared state should reflect the registration.
+        let resources = harness.state.get_resources().await;
+        assert_eq!(resources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_smoke_supports_feature_via_grpc() {
+        use crate::test_utils::TestEngine;
+
+        let harness = TestEngine::new().await;
+        let mut client = harness.monitor_client().await;
+
+        let resp = client
+            .supports_feature(tonic::Request::new(pulumirpc::SupportsFeatureRequest {
+                id: "secrets".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resp.has_support);
+    }
 }

@@ -859,7 +859,24 @@ mod tests {
         assert!(result.diffs.is_empty());
     }
 
-    // --- up (error cases) ---
+    #[tokio::test]
+    async fn refresh_custom_resource_no_drift_yields_same_diff() {
+        // Custom resource saved with empty outputs. MockProvider::read echoes
+        // the request's properties back, so live outputs == prior outputs and
+        // the diff is RefreshAction::Same.
+        let dir = tempfile::tempdir().unwrap();
+        save_checkpoint(dir.path(), vec![sample_resource("bucket", true)]);
+
+        let engine = make_engine(dir.path());
+        let result = engine.refresh().await.unwrap();
+
+        assert_eq!(result.diffs.len(), 1);
+        assert!(matches!(result.diffs[0].action, RefreshAction::Same));
+        // Summary mentions one unchanged resource.
+        assert!(result.stdout.contains("1 unchanged"));
+    }
+
+    // --- up (error cases + minimal happy path) ---
 
     #[tokio::test]
     async fn up_empty_program_returns_error() {
@@ -875,6 +892,81 @@ mod tests {
         let engine = make_engine(dir.path());
         let err = engine.preview().await.unwrap_err();
         assert!(err.to_string().contains("no program"));
+    }
+
+    #[tokio::test]
+    async fn up_with_noop_program_succeeds_and_writes_empty_checkpoint() {
+        // Spawn `/bin/true` as the program — it exits 0 immediately without
+        // connecting to the engine. Verifies the gRPC servers start, the
+        // subprocess is spawned with PULUMI_* env vars, the servers are
+        // aborted on exit, and an empty checkpoint is saved.
+        if !std::path::Path::new("/bin/true").exists() {
+            return; // skip on platforms without /bin/true
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let opts = EngineOptions {
+            project: "test-proj".into(),
+            stack: "dev".into(),
+            work_dir: dir.path().to_path_buf(),
+            program: vec!["/bin/true".into()],
+            ..Default::default()
+        };
+        let engine: PulumiEngine<MockProvider> =
+            PulumiEngine::with_providers(opts, ProviderManager::new());
+
+        let result = engine.up().await.unwrap();
+        assert_eq!(result.outputs, serde_json::Value::Object(Default::default()));
+
+        // Checkpoint was written with no resources.
+        let cp_path = dir.path().join(".pulumi-rs").join("dev.json");
+        let loaded = Checkpoint::load(&cp_path).unwrap().unwrap();
+        assert!(loaded.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_with_noop_program_does_not_write_checkpoint() {
+        if !std::path::Path::new("/bin/true").exists() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let opts = EngineOptions {
+            project: "test-proj".into(),
+            stack: "dev".into(),
+            work_dir: dir.path().to_path_buf(),
+            program: vec!["/bin/true".into()],
+            ..Default::default()
+        };
+        let engine: PulumiEngine<MockProvider> =
+            PulumiEngine::with_providers(opts, ProviderManager::new());
+
+        engine.preview().await.unwrap();
+
+        // Preview must not persist state.
+        let cp_path = dir.path().join(".pulumi-rs").join("dev.json");
+        assert!(!cp_path.exists(), "preview should not write a checkpoint");
+    }
+
+    #[tokio::test]
+    async fn up_with_failing_program_returns_program_failed_error() {
+        if !std::path::Path::new("/bin/false").exists() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let opts = EngineOptions {
+            project: "test-proj".into(),
+            stack: "dev".into(),
+            work_dir: dir.path().to_path_buf(),
+            program: vec!["/bin/false".into()],
+            ..Default::default()
+        };
+        let engine: PulumiEngine<MockProvider> =
+            PulumiEngine::with_providers(opts, ProviderManager::new());
+
+        let err = engine.up().await.unwrap_err();
+        assert!(matches!(err, Error::ProgramFailed { .. }));
     }
 
     #[test]

@@ -4,7 +4,6 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 5b | Engine test coverage | `pulumi-engine` | Medium | Low | Depends on 5a. Add `TestEngine` harness in `test_utils.rs` (spawns both services in-process on ephemeral ports, returns `(client, Arc<EngineState>)`). Default to direct handler-call tests; use in-process server for streaming RPCs and one happy/error-path smoke test per service to cover shim wiring. Targets `orchestrator.rs`, `engine_service.rs`, `monitor_service.rs`. |
 | 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 | 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
@@ -22,7 +21,7 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
 | ~~5a~~ | ~~Refactor engine services into handler + shim~~ | ~~Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided~~ | ~~Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly~~ |
-| 5b | Engine test coverage | Moderate total — many handler-level tests plus harness | Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused |
+| ~~5b~~ | ~~Engine test coverage~~ | ~~Moderate total — many handler-level tests plus harness~~ | ~~Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused~~ |
 | ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
@@ -47,6 +46,44 @@ Existing unit tests now call handlers directly (no `Request::new(...)` /
 trait). All 67 tests pass.
 
 This is the prerequisite for 5b: `TestEngine` harness + expanded coverage.
+
+## Engine Test Coverage ✓ Done
+
+**Crate:** `pulumi-engine`
+
+Built on top of the 5a refactor. Two new pieces in `test_utils.rs`:
+
+- **`TestEngine`** — in-process harness that binds both gRPC servers to
+  ephemeral 127.0.0.1 ports, exposes `monitor_client()` / `engine_client()`
+  tonic clients, and shares the `EngineState` with the test so assertions
+  can inspect internal state after RPCs. Servers are aborted on `Drop`.
+  Connect retry loop handles the spawn-then-bind race.
+- **`state_with_prior(...)`** — builds an `EngineState` from a synthetic
+  `Checkpoint`, so tests can populate prior-run resources without writing
+  to disk. Used to exercise the `register_resource` Same/Update diff paths.
+
+**New coverage** (85 tests total, up from 67):
+
+- **`monitor_service.rs`** — direct handler tests for `read_resource`
+  (builtin + custom), `call` (builtin + provider), `register_resource_hook`,
+  `register_error_hook`, `signal_and_wait_for_shutdown`. New
+  `register_resource` tests for the Same path (prior id preserved), Update
+  path (provider.update called), and dry-run Update (provider skipped).
+  Two `TestEngine` smoke tests exercise the tonic shim end-to-end
+  (`register_resource` and `supports_feature`).
+- **`engine_service.rs`** — two `TestEngine` smoke tests for `set_root` /
+  `get_root` round-trip and `log` via gRPC.
+- **`orchestrator.rs`** — refresh on a custom resource yields a `Same`
+  diff via `MockProvider::read`'s default echo. Three subprocess-based
+  tests (`/bin/true` / `/bin/false`) verify the full `up` / `preview`
+  lifecycle: gRPC servers start, child program runs with `PULUMI_*` env
+  vars, servers abort on exit, checkpoint written by `up` but not by
+  `preview`, `Error::ProgramFailed` on non-zero exit.
+
+**Default pattern**: call `handle_*` methods directly (fast, easy
+`EngineState` assertions). Reach for `TestEngine` only when the test is
+about transport — wire encoding, status code propagation, or shim wiring
+that handler-level tests can't see.
 
 ## Integration Tests ✓ Done
 

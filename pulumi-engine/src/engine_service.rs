@@ -293,4 +293,53 @@ mod tests {
         .await
         .unwrap();
     }
+
+    // --- in-process server smoke tests (covers the tonic shim wiring) ---
+
+    #[tokio::test]
+    async fn test_smoke_set_and_get_root_resource_via_grpc() {
+        use crate::test_utils::TestEngine;
+
+        let harness = TestEngine::new().await;
+        let mut client = harness.engine_client().await;
+
+        let stack_urn = "urn:pulumi:dev::test::pulumi:pulumi:Stack::stack";
+        client
+            .set_root_resource(tonic::Request::new(pulumirpc::SetRootResourceRequest {
+                urn: stack_urn.into(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = client
+            .get_root_resource(tonic::Request::new(pulumirpc::GetRootResourceRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.urn, stack_urn);
+
+        // The shared state should reflect what we set via gRPC.
+        assert_eq!(harness.state.get_root_urn().await, stack_urn);
+    }
+
+    #[tokio::test]
+    async fn test_smoke_log_via_grpc() {
+        use crate::test_utils::TestEngine;
+
+        let harness = TestEngine::new().await;
+        let mut client = harness.engine_client().await;
+
+        // No event collector wired in TestEngine; just verifies the call
+        // completes successfully through the shim.
+        client
+            .log(tonic::Request::new(pulumirpc::LogRequest {
+                severity: 1,
+                message: "hello via grpc".into(),
+                urn: String::new(),
+                stream_id: 0,
+                ephemeral: false,
+            }))
+            .await
+            .unwrap();
+    }
 }
