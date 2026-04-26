@@ -4,9 +4,8 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
-| 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
-| 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
+| 1 | crates.io publishing | all | Medium | Easy | API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. Includes a published-artifact smoke test (see section below) — existing integration tests use workspace path deps and don't validate the published tarball. |
+| 2 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 
 ## AI-Assisted Development: Effort vs Difficulty
 
@@ -20,14 +19,35 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
-| ~~5a~~ | ~~Refactor engine services into handler + shim~~ | ~~Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided~~ | ~~Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly~~ |
-| ~~5b~~ | ~~Engine test coverage~~ | ~~Moderate total — many handler-level tests plus harness~~ | ~~Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused~~ |
-| ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
-| 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
-| 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
-| 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
+| 1 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
+| 2 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
 
 ---
+
+## MockMonitor Improvements ✓ Done
+
+**Crate:** `pulumi-core`
+
+`MockMonitor`/`TestContextBuilder` extended for finer-grained test assertions:
+
+- **Recording** — added `recorded_reads()` (`ReadResourceRecording`) and
+  `recorded_outputs()` (`OutputsRegistration`). `ResourceRegistration` now
+  captures `provider`, `providers`, `aliases` (URN form + spec URNs),
+  `version`, `plugin_download_url`, `import_id`, `remote`,
+  `delete_before_replace`, `retain_on_delete`, `additional_secret_outputs`,
+  `replace_on_changes`, `ignore_changes`.
+- **Error injection** — extended beyond `register_resource` to
+  `read_resource` (keyed by type+name), `invoke` (keyed by token), and
+  `call` (keyed by token).
+- **Canned responses** — added for `read_resource`, `invoke`, and `call`
+  alongside the existing `register_resource` support.
+- **Plumbing** — `with_options` now takes a single `MockMonitorOptions`
+  struct (parameter list was getting unwieldy). `TestContextBuilder` gains
+  `with_read_response/error`, `with_invoke_response/error`,
+  `with_call_response/error`. `TestContext` gains `read_resources()`,
+  `registered_outputs()`, `called_methods()` accessors.
+
+Tests grew from 113 → 131 (`pulumi-core`).
 
 ## Engine Service Handler/Shim Refactor ✓ Done
 
@@ -202,6 +222,26 @@ third-party integrations) depend on stable interfaces.
 
 5. **Feature flags documentation.** Document `macros` feature and any future
    features (`test-support`, etc.) in crate-level docs and README.
+
+6. **Published-artifact smoke test.** The existing `integration-tests/` crate
+   uses workspace `path = "..."` deps, so it verifies the SDK source but not
+   the published tarball. Things that would slip through: a file accidentally
+   `exclude`d from `Cargo.toml`, a `proto/` directory missing from the package,
+   a feature flag that compiles in-tree but fails when fetched from crates.io,
+   a path-only dev-dependency leaking into a non-dev section.
+
+   Two pieces of work:
+   - **Pre-release:** `cargo publish --dry-run` for every workspace crate as a
+     CI check on release PRs. Catches packaging bugs without burning a version.
+   - **Post-publish:** a separate smoke test (CI job or `xtask`) that creates a
+     temp project *outside* the workspace, runs `cargo add pulumi = "X.Y.Z"`,
+     builds a minimal program against the published version, and runs it
+     through `pulumi up` against the file backend. Must not see the workspace
+     so the consumption path is exercised honestly.
+
+   Optionally pin one `integration-tests/testdata/*` program to the published
+   version once available, so day-to-day `cargo test` exercises consumption
+   too — at the cost of testdata lagging HEAD.
 
 ## Stable Rust Support — Non-Goal
 
