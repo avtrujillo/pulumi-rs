@@ -20,9 +20,6 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 
 | # | Item | Effort (throughput) | Difficulty (peak context) |
 |---|------|---|---|
-| ~~5a~~ | ~~Refactor engine services into handler + shim~~ | ~~Moderate total — touches two ~500-line files; mostly mechanical once the split shape is decided~~ | ~~Moderate peak — must hold transport (`tonic::Request`/`Response`/`Status`) and domain logic (`EngineState` mutations, provider calls) in mind together to extract them cleanly~~ |
-| ~~5b~~ | ~~Engine test coverage~~ | ~~Moderate total — many handler-level tests plus harness~~ | ~~Low peak — handler signatures from 5a make each test self-contained; `TestEngine` harness is built once and reused~~ |
-| ~~7~~ | ~~Integration tests~~ | ~~High total — many test programs to write~~ | ~~Moderate peak — each test is self-contained~~ |
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
 | 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
