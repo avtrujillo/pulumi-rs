@@ -4,7 +4,7 @@
 
 | # | Item | Crate | Effort | Difficulty | Notes |
 |---|------|-------|--------|------------|-------|
-| 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
+| 8 | crates.io publishing | all | Medium | Easy | API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. Includes a published-artifact smoke test (see section below) — existing integration tests use workspace path deps and don't validate the published tarball. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
 
 ## AI-Assisted Development: Effort vs Difficulty
@@ -222,6 +222,26 @@ third-party integrations) depend on stable interfaces.
 
 5. **Feature flags documentation.** Document `macros` feature and any future
    features (`test-support`, etc.) in crate-level docs and README.
+
+6. **Published-artifact smoke test.** The existing `integration-tests/` crate
+   uses workspace `path = "..."` deps, so it verifies the SDK source but not
+   the published tarball. Things that would slip through: a file accidentally
+   `exclude`d from `Cargo.toml`, a `proto/` directory missing from the package,
+   a feature flag that compiles in-tree but fails when fetched from crates.io,
+   a path-only dev-dependency leaking into a non-dev section.
+
+   Two pieces of work:
+   - **Pre-release:** `cargo publish --dry-run` for every workspace crate as a
+     CI check on release PRs. Catches packaging bugs without burning a version.
+   - **Post-publish:** a separate smoke test (CI job or `xtask`) that creates a
+     temp project *outside* the workspace, runs `cargo add pulumi = "X.Y.Z"`,
+     builds a minimal program against the published version, and runs it
+     through `pulumi up` against the file backend. Must not see the workspace
+     so the consumption path is exercised honestly.
+
+   Optionally pin one `integration-tests/testdata/*` program to the published
+   version once available, so day-to-day `cargo test` exercises consumption
+   too — at the cost of testdata lagging HEAD.
 
 ## Stable Rust Support — Non-Goal
 
