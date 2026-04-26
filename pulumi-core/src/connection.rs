@@ -234,81 +234,151 @@ pub struct ResourceRegistration {
     pub inputs: serde_json::Value,
     /// Whether this is a custom (leaf) resource.
     pub custom: bool,
+    /// Whether this is a remote (plugin-managed) component resource.
+    pub remote: bool,
     /// The parent resource URN, or empty if none.
     pub parent: String,
     /// URNs of resources this resource depends on.
     pub depends_on: Vec<String>,
     /// Whether the resource is protected from deletion.
     pub protect: bool,
+    /// Provider reference (e.g. `"urn::id"`), or empty if none.
+    pub provider: String,
+    /// Map of package name to provider reference for nested resources.
+    pub providers: HashMap<String, String>,
+    /// Additional alias URNs.
+    pub aliases: Vec<String>,
+    /// Provider version requested for this resource.
+    pub version: String,
+    /// Plugin download URL override, if any.
+    pub plugin_download_url: String,
+    /// Import ID — if set, the resource state is read from this ID instead of created.
+    pub import_id: String,
+    /// Whether `delete_before_replace` was requested.
+    pub delete_before_replace: bool,
+    /// Whether the engine should retain this resource on stack deletion.
+    pub retain_on_delete: bool,
+    /// Property names that should be marked secret in addition to those detected.
+    pub additional_secret_outputs: Vec<String>,
+    /// Property selectors that force replacement when changed.
+    pub replace_on_changes: Vec<String>,
+    /// Property selectors to ignore during updates.
+    pub ignore_changes: Vec<String>,
+}
+
+/// A `read_resource` call captured by [`MockMonitor`] during testing.
+#[derive(Debug, Clone)]
+pub struct ReadResourceRecording {
+    /// The Pulumi type token.
+    pub type_token: String,
+    /// The logical resource name.
+    pub name: String,
+    /// The id to read.
+    pub id: String,
+    /// The parent URN, or empty if none.
+    pub parent: String,
+    /// The properties hint passed to `read_resource`, as JSON.
+    pub properties: serde_json::Value,
+}
+
+/// A `register_resource_outputs` call captured by [`MockMonitor`] during testing.
+#[derive(Debug, Clone)]
+pub struct OutputsRegistration {
+    /// The URN whose outputs were registered.
+    pub urn: String,
+    /// The outputs registered, as JSON.
+    pub outputs: serde_json::Value,
+}
+
+/// Configuration for [`MockMonitor`]. Fields default to empty / `false`.
+///
+/// Construct with [`MockMonitorOptions::new(project, stack)`](MockMonitorOptions::new),
+/// then use the builder-style setters to add canned responses and error injection.
+#[derive(Clone, Default)]
+pub struct MockMonitorOptions {
+    pub project: String,
+    pub stack: String,
+    /// Canned outputs for `register_resource`, keyed by (type_token, name).
+    pub responses: HashMap<(String, String), serde_json::Value>,
+    /// Canned outputs for `read_resource`, keyed by (type_token, name).
+    pub read_responses: HashMap<(String, String), serde_json::Value>,
+    /// Canned outputs for `invoke`, keyed by function token.
+    pub invoke_responses: HashMap<String, serde_json::Value>,
+    /// Canned outputs for component-method `call`, keyed by method token.
+    pub call_responses: HashMap<String, serde_json::Value>,
+    /// Errors to inject for `register_resource`, keyed by (type_token, name).
+    pub resource_errors: HashMap<(String, String), String>,
+    /// Errors to inject for `read_resource`, keyed by (type_token, name).
+    pub read_errors: HashMap<(String, String), String>,
+    /// Errors to inject for `invoke`, keyed by function token.
+    pub invoke_errors: HashMap<String, String>,
+    /// Errors to inject for `call`, keyed by method token.
+    pub call_errors: HashMap<String, String>,
+    /// If true, return empty outputs from `register_resource` (simulates pulumi preview).
+    pub preview: bool,
+}
+
+impl MockMonitorOptions {
+    pub fn new(project: impl Into<String>, stack: impl Into<String>) -> Self {
+        Self {
+            project: project.into(),
+            stack: stack.into(),
+            ..Default::default()
+        }
+    }
 }
 
 /// A mock [`MonitorConnection`] that records calls and returns configurable responses.
 ///
 /// By default, echoes inputs back as outputs and returns a synthetic URN for
-/// `register_resource`. Use [`crate::test_support::TestContextBuilder`] to
-/// configure per-resource canned responses, error injection, and preview mode.
+/// `register_resource`. Use [`crate::test_support::TestContextBuilder`] or
+/// [`MockMonitorOptions`] directly to configure canned responses and error
+/// injection per resource, function token, or method token.
 #[derive(Clone)]
 pub struct MockMonitor {
     project: String,
     stack: String,
-    /// Canned outputs keyed by (type_token, name). Immutable after construction.
     responses: Arc<HashMap<(String, String), serde_json::Value>>,
-    /// Error messages to inject keyed by (type_token, name). Immutable after construction.
+    read_responses: Arc<HashMap<(String, String), serde_json::Value>>,
+    invoke_responses: Arc<HashMap<String, serde_json::Value>>,
+    call_responses: Arc<HashMap<String, serde_json::Value>>,
     resource_errors: Arc<HashMap<(String, String), String>>,
-    /// All register_resource calls, shared across clones.
+    read_errors: Arc<HashMap<(String, String), String>>,
+    invoke_errors: Arc<HashMap<String, String>>,
+    call_errors: Arc<HashMap<String, String>>,
     recordings: Arc<Mutex<Vec<ResourceRegistration>>>,
-    /// All invoke calls, shared across clones.
+    read_recordings: Arc<Mutex<Vec<ReadResourceRecording>>>,
+    outputs_recordings: Arc<Mutex<Vec<OutputsRegistration>>>,
     invoke_recordings: Arc<Mutex<Vec<InvokeRecording>>>,
-    /// All call (component method) calls, shared across clones.
     call_recordings: Arc<Mutex<Vec<MethodCallRecording>>>,
-    /// If true, return empty outputs (simulates pulumi preview).
     preview: bool,
 }
 
 impl MockMonitor {
     pub fn new(project: impl Into<String>, stack: impl Into<String>) -> Self {
-        Self {
-            project: project.into(),
-            stack: stack.into(),
-            responses: Arc::new(HashMap::new()),
-            resource_errors: Arc::new(HashMap::new()),
-            recordings: Arc::new(Mutex::new(Vec::new())),
-            invoke_recordings: Arc::new(Mutex::new(Vec::new())),
-            call_recordings: Arc::new(Mutex::new(Vec::new())),
-            preview: false,
-        }
+        Self::with_options(MockMonitorOptions::new(project, stack))
     }
 
-    /// Constructs a monitor with canned responses, error injection, and preview mode.
-    /// Used by [`crate::test_support::TestContextBuilder`].
-    pub(crate) fn with_options(
-        project: String,
-        stack: String,
-        responses: HashMap<(String, String), serde_json::Value>,
-        resource_errors: HashMap<(String, String), String>,
-        preview: bool,
-    ) -> Self {
+    /// Constructs a monitor from the given options.
+    pub fn with_options(opts: MockMonitorOptions) -> Self {
         Self {
-            project,
-            stack,
-            responses: Arc::new(responses),
-            resource_errors: Arc::new(resource_errors),
+            project: opts.project,
+            stack: opts.stack,
+            responses: Arc::new(opts.responses),
+            read_responses: Arc::new(opts.read_responses),
+            invoke_responses: Arc::new(opts.invoke_responses),
+            call_responses: Arc::new(opts.call_responses),
+            resource_errors: Arc::new(opts.resource_errors),
+            read_errors: Arc::new(opts.read_errors),
+            invoke_errors: Arc::new(opts.invoke_errors),
+            call_errors: Arc::new(opts.call_errors),
             recordings: Arc::new(Mutex::new(Vec::new())),
+            read_recordings: Arc::new(Mutex::new(Vec::new())),
+            outputs_recordings: Arc::new(Mutex::new(Vec::new())),
             invoke_recordings: Arc::new(Mutex::new(Vec::new())),
             call_recordings: Arc::new(Mutex::new(Vec::new())),
-            preview,
+            preview: opts.preview,
         }
-    }
-
-    /// Constructs a monitor with canned responses and preview mode (no error injection).
-    /// Used by [`crate::test_support::TestContextBuilder`].
-    pub(crate) fn with_responses(
-        project: String,
-        stack: String,
-        responses: HashMap<(String, String), serde_json::Value>,
-        preview: bool,
-    ) -> Self {
-        Self::with_options(project, stack, responses, HashMap::new(), preview)
     }
 
     fn make_urn(&self, resource_type: &str, name: &str) -> String {
@@ -318,9 +388,19 @@ impl MockMonitor {
         )
     }
 
-    /// Returns all resource registrations recorded so far.
+    /// Returns all `register_resource` calls recorded so far.
     pub fn recorded_registrations(&self) -> Vec<ResourceRegistration> {
         self.recordings.lock().unwrap().clone()
+    }
+
+    /// Returns all `read_resource` calls recorded so far.
+    pub fn recorded_reads(&self) -> Vec<ReadResourceRecording> {
+        self.read_recordings.lock().unwrap().clone()
+    }
+
+    /// Returns all `register_resource_outputs` calls recorded so far.
+    pub fn recorded_outputs(&self) -> Vec<OutputsRegistration> {
+        self.outputs_recordings.lock().unwrap().clone()
     }
 
     /// Returns all `invoke` calls recorded so far.
@@ -353,14 +433,36 @@ impl MonitorConnection for MockMonitor {
             .map(crate::serde::struct_to_json)
             .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
+        let aliases = req
+            .aliases
+            .iter()
+            .filter_map(|a| match a.alias.as_ref() {
+                Some(pulumirpc::alias::Alias::Urn(urn)) => Some(urn.clone()),
+                _ => None,
+            })
+            .chain(req.alias_ur_ns.iter().cloned())
+            .collect();
+
         self.recordings.lock().unwrap().push(ResourceRegistration {
             type_token: req.r#type.clone(),
             name: req.name.clone(),
             inputs: inputs_json,
             custom: req.custom,
+            remote: req.remote,
             parent: req.parent.clone(),
             depends_on: req.dependencies.clone(),
             protect: req.protect.unwrap_or(false),
+            provider: req.provider.clone(),
+            providers: req.providers.clone(),
+            aliases,
+            version: req.version.clone(),
+            plugin_download_url: req.plugin_download_url.clone(),
+            import_id: req.import_id.clone(),
+            delete_before_replace: req.delete_before_replace,
+            retain_on_delete: req.retain_on_delete.unwrap_or(false),
+            additional_secret_outputs: req.additional_secret_outputs.clone(),
+            replace_on_changes: req.replace_on_changes.clone(),
+            ignore_changes: req.ignore_changes.clone(),
         });
 
         let urn = self.make_urn(&req.r#type, &req.name);
@@ -373,7 +475,6 @@ impl MonitorConnection for MockMonitor {
         let object = if self.preview {
             Some(prost_types::Struct::default())
         } else {
-            let key = (req.r#type.clone(), req.name.clone());
             match self.responses.get(&key) {
                 Some(json) => Some(crate::serde::json_to_struct(json)),
                 None => req.object,
@@ -393,8 +494,17 @@ impl MonitorConnection for MockMonitor {
 
     async fn register_resource_outputs(
         &self,
-        _req: pulumirpc::RegisterResourceOutputsRequest,
+        req: pulumirpc::RegisterResourceOutputsRequest,
     ) -> Result<()> {
+        let outputs = req
+            .outputs
+            .as_ref()
+            .map(crate::serde::struct_to_json)
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+        self.outputs_recordings.lock().unwrap().push(OutputsRegistration {
+            urn: req.urn,
+            outputs,
+        });
         Ok(())
     }
 
@@ -402,17 +512,48 @@ impl MonitorConnection for MockMonitor {
         &self,
         req: pulumirpc::ReadResourceRequest,
     ) -> Result<pulumirpc::ReadResourceResponse> {
+        let key = (req.r#type.clone(), req.name.clone());
+        if let Some(err_msg) = self.read_errors.get(&key) {
+            return Err(crate::error::Error::Custom(format!(
+                "injected error for read {}/{}: {err_msg}",
+                req.r#type, req.name
+            )));
+        }
+
+        let properties_json = req
+            .properties
+            .as_ref()
+            .map(crate::serde::struct_to_json)
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+
+        self.read_recordings.lock().unwrap().push(ReadResourceRecording {
+            type_token: req.r#type.clone(),
+            name: req.name.clone(),
+            id: req.id.clone(),
+            parent: req.parent.clone(),
+            properties: properties_json,
+        });
+
         let urn = self.make_urn(&req.r#type, &req.name);
-        Ok(pulumirpc::ReadResourceResponse {
-            urn,
-            properties: req.properties,
-        })
+        let properties = match self.read_responses.get(&key) {
+            Some(json) => Some(crate::serde::json_to_struct(json)),
+            None => req.properties,
+        };
+
+        Ok(pulumirpc::ReadResourceResponse { urn, properties })
     }
 
     async fn invoke(
         &self,
         req: pulumirpc::ResourceInvokeRequest,
     ) -> Result<pulumirpc::InvokeResponse> {
+        if let Some(err_msg) = self.invoke_errors.get(&req.tok) {
+            return Err(crate::error::Error::Custom(format!(
+                "injected error for invoke {}: {err_msg}",
+                req.tok
+            )));
+        }
+
         let args = req
             .args
             .as_ref()
@@ -422,15 +563,26 @@ impl MonitorConnection for MockMonitor {
             token: req.tok.clone(),
             args,
         });
+
+        let r#return = match self.invoke_responses.get(&req.tok) {
+            Some(json) => Some(crate::serde::json_to_struct(json)),
+            None => Some(prost_types::Struct::default()),
+        };
+
         Ok(pulumirpc::InvokeResponse {
-            r#return: Some(prost_types::Struct {
-                fields: Default::default(),
-            }),
+            r#return,
             failures: vec![],
         })
     }
 
     async fn call(&self, req: pulumirpc::ResourceCallRequest) -> Result<pulumirpc::CallResponse> {
+        if let Some(err_msg) = self.call_errors.get(&req.tok) {
+            return Err(crate::error::Error::Custom(format!(
+                "injected error for call {}: {err_msg}",
+                req.tok
+            )));
+        }
+
         let args = req
             .args
             .as_ref()
@@ -440,10 +592,14 @@ impl MonitorConnection for MockMonitor {
             token: req.tok.clone(),
             args,
         });
+
+        let r#return = match self.call_responses.get(&req.tok) {
+            Some(json) => Some(crate::serde::json_to_struct(json)),
+            None => Some(prost_types::Struct::default()),
+        };
+
         Ok(pulumirpc::CallResponse {
-            r#return: Some(prost_types::Struct {
-                fields: Default::default(),
-            }),
+            r#return,
             failures: vec![],
             return_dependencies: Default::default(),
         })
@@ -607,7 +763,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_monitor_preview_returns_empty_outputs() {
-        let m = MockMonitor::with_responses("p".into(), "s".into(), HashMap::new(), true);
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            preview: true,
+            ..MockMonitorOptions::new("p", "s")
+        });
         let req = pulumirpc::RegisterResourceRequest {
             r#type: "test:t:T".into(),
             name: "r".into(),
@@ -626,7 +785,10 @@ mod tests {
             ("test:t:T".into(), "r".into()),
             serde_json::json!({ "arn": "arn:test:::r" }),
         );
-        let m = MockMonitor::with_responses("p".into(), "s".into(), responses, false);
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            responses,
+            ..MockMonitorOptions::new("p", "s")
+        });
         let req = reg_req("test:t:T", "r", true);
         let resp = m.register_resource(req).await.unwrap();
         let json = struct_to_json(&resp.object.unwrap());
@@ -849,9 +1011,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_monitor_injected_error_returned() {
-        let mut errors = HashMap::new();
-        errors.insert(("test:t:T".into(), "bad-res".into()), "simulated failure".into());
-        let m = MockMonitor::with_options("p".into(), "s".into(), HashMap::new(), errors, false);
+        let mut resource_errors = HashMap::new();
+        resource_errors.insert(("test:t:T".into(), "bad-res".into()), "simulated failure".into());
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            resource_errors,
+            ..MockMonitorOptions::new("p", "s")
+        });
         let err = m
             .register_resource(reg_req("test:t:T", "bad-res", true))
             .await
@@ -861,11 +1026,283 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_monitor_injected_error_only_for_matching_resource() {
-        let mut errors = HashMap::new();
-        errors.insert(("test:t:T".into(), "bad-res".into()), "fail".into());
-        let m = MockMonitor::with_options("p".into(), "s".into(), HashMap::new(), errors, false);
+        let mut resource_errors = HashMap::new();
+        resource_errors.insert(("test:t:T".into(), "bad-res".into()), "fail".into());
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            resource_errors,
+            ..MockMonitorOptions::new("p", "s")
+        });
         // Different name — should succeed
         let resp = m.register_resource(reg_req("test:t:T", "good-res", true)).await;
         assert!(resp.is_ok());
+    }
+
+    // --- Expanded ResourceRegistration capture ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_provider_and_version() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "aws:s3/bucket:Bucket".into(),
+            name: "b".into(),
+            custom: true,
+            provider: "urn:provider::p1::id".into(),
+            version: "6.50.0".into(),
+            plugin_download_url: "https://example.com/plugin".into(),
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        let r = &m.recorded_registrations()[0];
+        assert_eq!(r.provider, "urn:provider::p1::id");
+        assert_eq!(r.version, "6.50.0");
+        assert_eq!(r.plugin_download_url, "https://example.com/plugin");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_providers_map() {
+        let m = MockMonitor::new("p", "s");
+        let mut providers = HashMap::new();
+        providers.insert("aws".into(), "urn:provider::aws::id".into());
+        providers.insert("k8s".into(), "urn:provider::k8s::id".into());
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            providers: providers.clone(),
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        assert_eq!(m.recorded_registrations()[0].providers, providers);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_aliases_from_both_sources() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            aliases: vec![pulumirpc::Alias {
+                alias: Some(pulumirpc::alias::Alias::Urn("urn:alias:1".into())),
+            }],
+            alias_ur_ns: vec!["urn:alias:legacy".into()],
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        let aliases = &m.recorded_registrations()[0].aliases;
+        assert_eq!(aliases, &vec!["urn:alias:1".to_string(), "urn:alias:legacy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_records_change_lists_and_flags() {
+        let m = MockMonitor::new("p", "s");
+        let req = pulumirpc::RegisterResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            custom: true,
+            ignore_changes: vec!["tags".into()],
+            replace_on_changes: vec!["name".into()],
+            additional_secret_outputs: vec!["password".into()],
+            delete_before_replace: true,
+            retain_on_delete: Some(true),
+            import_id: "i-1234".into(),
+            remote: true,
+            ..Default::default()
+        };
+        m.register_resource(req).await.unwrap();
+        let r = &m.recorded_registrations()[0];
+        assert_eq!(r.ignore_changes, vec!["tags".to_string()]);
+        assert_eq!(r.replace_on_changes, vec!["name".to_string()]);
+        assert_eq!(r.additional_secret_outputs, vec!["password".to_string()]);
+        assert!(r.delete_before_replace);
+        assert!(r.retain_on_delete);
+        assert_eq!(r.import_id, "i-1234");
+        assert!(r.remote);
+    }
+
+    // --- read_resource recording, canned responses, and error injection ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_read_resource_recorded() {
+        let m = MockMonitor::new("p", "s");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "id".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("hint".into())),
+            },
+        );
+        m.read_resource(pulumirpc::ReadResourceRequest {
+            r#type: "test:t:T".into(),
+            name: "r".into(),
+            id: "external-id".into(),
+            parent: "urn:parent".into(),
+            properties: Some(prost_types::Struct { fields }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let reads = m.recorded_reads();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].type_token, "test:t:T");
+        assert_eq!(reads[0].id, "external-id");
+        assert_eq!(reads[0].parent, "urn:parent");
+        assert_eq!(reads[0].properties["id"], "hint");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_read_resource_canned_response() {
+        let mut read_responses = HashMap::new();
+        read_responses.insert(
+            ("test:t:T".into(), "r".into()),
+            serde_json::json!({ "imported": true }),
+        );
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            read_responses,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let resp = m
+            .read_resource(pulumirpc::ReadResourceRequest {
+                r#type: "test:t:T".into(),
+                name: "r".into(),
+                id: "i".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let json = struct_to_json(&resp.properties.unwrap());
+        assert_eq!(json["imported"], true);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_read_resource_error_injection() {
+        let mut read_errors = HashMap::new();
+        read_errors.insert(("test:t:T".into(), "missing".into()), "not found".into());
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            read_errors,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let err = m
+            .read_resource(pulumirpc::ReadResourceRequest {
+                r#type: "test:t:T".into(),
+                name: "missing".into(),
+                id: "i".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    // --- register_resource_outputs recording ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_register_resource_outputs_recorded() {
+        let m = MockMonitor::new("p", "s");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "endpoint".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("https://x".into())),
+            },
+        );
+        m.register_resource_outputs(pulumirpc::RegisterResourceOutputsRequest {
+            urn: "urn:component:c".into(),
+            outputs: Some(prost_types::Struct { fields }),
+        })
+        .await
+        .unwrap();
+        let outs = m.recorded_outputs();
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].urn, "urn:component:c");
+        assert_eq!(outs[0].outputs["endpoint"], "https://x");
+    }
+
+    // --- invoke / call canned responses and error injection ---
+
+    #[tokio::test]
+    async fn test_mock_monitor_invoke_canned_response() {
+        let mut invoke_responses = HashMap::new();
+        invoke_responses.insert(
+            "aws:ec2/getAmi:getAmi".into(),
+            serde_json::json!({ "id": "ami-1" }),
+        );
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            invoke_responses,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let resp = m
+            .invoke(pulumirpc::ResourceInvokeRequest {
+                tok: "aws:ec2/getAmi:getAmi".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let json = struct_to_json(&resp.r#return.unwrap());
+        assert_eq!(json["id"], "ami-1");
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_invoke_error_injection() {
+        let mut invoke_errors = HashMap::new();
+        invoke_errors.insert("aws:ec2/getAmi:getAmi".into(), "boom".into());
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            invoke_errors,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let err = m
+            .invoke(pulumirpc::ResourceInvokeRequest {
+                tok: "aws:ec2/getAmi:getAmi".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"));
+        // Other tokens still succeed.
+        assert!(m
+            .invoke(pulumirpc::ResourceInvokeRequest {
+                tok: "other:fn:fn".into(),
+                ..Default::default()
+            })
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_call_canned_response() {
+        let mut call_responses = HashMap::new();
+        call_responses.insert(
+            "my:component:doThing".into(),
+            serde_json::json!({ "ok": true }),
+        );
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            call_responses,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let resp = m
+            .call(pulumirpc::ResourceCallRequest {
+                tok: "my:component:doThing".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let json = struct_to_json(&resp.r#return.unwrap());
+        assert_eq!(json["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn test_mock_monitor_call_error_injection() {
+        let mut call_errors = HashMap::new();
+        call_errors.insert("my:component:doThing".into(), "method failed".into());
+        let m = MockMonitor::with_options(MockMonitorOptions {
+            call_errors,
+            ..MockMonitorOptions::new("p", "s")
+        });
+        let err = m
+            .call(pulumirpc::ResourceCallRequest {
+                tok: "my:component:doThing".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("method failed"));
     }
 }

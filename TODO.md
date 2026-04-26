@@ -6,7 +6,6 @@
 |---|------|-------|--------|------------|-------|
 | 8 | crates.io publishing | all | Medium | Easy | **Soft blocker for #7.** API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. |
 | 10 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
-| 11 | MockMonitor improvements | `pulumi-core` | Small | Low | Add error injection and full call recording to `MockMonitor` in `connection.rs` for finer-grained test assertions beyond what `TestContext` provides |
 
 ## AI-Assisted Development: Effort vs Difficulty
 
@@ -22,9 +21,33 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 |---|------|---|---|
 | 8 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 10 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
-| 11 | MockMonitor improvements | Low total — small extension of existing mock | Low peak — patterns already established in `connection.rs` |
 
 ---
+
+## MockMonitor Improvements ✓ Done
+
+**Crate:** `pulumi-core`
+
+`MockMonitor`/`TestContextBuilder` extended for finer-grained test assertions:
+
+- **Recording** — added `recorded_reads()` (`ReadResourceRecording`) and
+  `recorded_outputs()` (`OutputsRegistration`). `ResourceRegistration` now
+  captures `provider`, `providers`, `aliases` (URN form + spec URNs),
+  `version`, `plugin_download_url`, `import_id`, `remote`,
+  `delete_before_replace`, `retain_on_delete`, `additional_secret_outputs`,
+  `replace_on_changes`, `ignore_changes`.
+- **Error injection** — extended beyond `register_resource` to
+  `read_resource` (keyed by type+name), `invoke` (keyed by token), and
+  `call` (keyed by token).
+- **Canned responses** — added for `read_resource`, `invoke`, and `call`
+  alongside the existing `register_resource` support.
+- **Plumbing** — `with_options` now takes a single `MockMonitorOptions`
+  struct (parameter list was getting unwieldy). `TestContextBuilder` gains
+  `with_read_response/error`, `with_invoke_response/error`,
+  `with_call_response/error`. `TestContext` gains `read_resources()`,
+  `registered_outputs()`, `called_methods()` accessors.
+
+Tests grew from 113 → 131 (`pulumi-core`).
 
 ## Engine Service Handler/Shim Refactor ✓ Done
 

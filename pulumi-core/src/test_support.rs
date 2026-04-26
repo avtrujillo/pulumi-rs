@@ -28,9 +28,11 @@
 use std::collections::HashMap;
 
 use crate::connection::{
-    InvokeRecording, LogRecord, MockEngine, MockMonitor, ResourceRegistration,
+    InvokeRecording, LogRecord, MethodCallRecording, MockEngine, MockMonitor, MockMonitorOptions,
+    OutputsRegistration, ReadResourceRecording, ResourceRegistration,
 };
 use crate::context::{Context, Settings};
+use crate::invoke::{ComponentMethod, ProviderFunction};
 use crate::resource::Resource;
 
 /// Fluent builder for [`TestContext`].
@@ -41,7 +43,13 @@ pub struct TestContextBuilder {
     config: HashMap<String, String>,
     config_secret_keys: Vec<String>,
     responses: HashMap<(String, String), serde_json::Value>,
+    read_responses: HashMap<(String, String), serde_json::Value>,
+    invoke_responses: HashMap<String, serde_json::Value>,
+    call_responses: HashMap<String, serde_json::Value>,
     errors: HashMap<(String, String), String>,
+    read_errors: HashMap<(String, String), String>,
+    invoke_errors: HashMap<String, String>,
+    call_errors: HashMap<String, String>,
 }
 
 impl Default for TestContextBuilder {
@@ -59,7 +67,13 @@ impl TestContextBuilder {
             config: HashMap::new(),
             config_secret_keys: Vec::new(),
             responses: HashMap::new(),
+            read_responses: HashMap::new(),
+            invoke_responses: HashMap::new(),
+            call_responses: HashMap::new(),
             errors: HashMap::new(),
+            read_errors: HashMap::new(),
+            invoke_errors: HashMap::new(),
+            call_errors: HashMap::new(),
         }
     }
 
@@ -130,6 +144,60 @@ impl TestContextBuilder {
         self
     }
 
+    /// Registers canned outputs returned by `read_resource` for a type and name.
+    pub fn with_read_response<R: Resource>(
+        mut self,
+        name: impl Into<String>,
+        outputs: serde_json::Value,
+    ) -> Self {
+        self.read_responses
+            .insert((R::TYPE_TOKEN.to_string(), name.into()), outputs);
+        self
+    }
+
+    /// Injects an error for `read_resource` of a specific type and name.
+    pub fn with_read_error<R: Resource>(
+        mut self,
+        name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        self.read_errors
+            .insert((R::TYPE_TOKEN.to_string(), name.into()), message.into());
+        self
+    }
+
+    /// Registers canned outputs returned by `invoke` for the given provider function.
+    pub fn with_invoke_response<F: ProviderFunction>(
+        mut self,
+        outputs: serde_json::Value,
+    ) -> Self {
+        self.invoke_responses.insert(F::TOKEN.to_string(), outputs);
+        self
+    }
+
+    /// Injects an error for `invoke` of the given provider function.
+    pub fn with_invoke_error<F: ProviderFunction>(mut self, message: impl Into<String>) -> Self {
+        self.invoke_errors
+            .insert(F::TOKEN.to_string(), message.into());
+        self
+    }
+
+    /// Registers canned outputs returned by `call` for the given component method.
+    pub fn with_call_response<M: ComponentMethod>(
+        mut self,
+        outputs: serde_json::Value,
+    ) -> Self {
+        self.call_responses.insert(M::TOKEN.to_string(), outputs);
+        self
+    }
+
+    /// Injects an error for `call` of the given component method.
+    pub fn with_call_error<M: ComponentMethod>(mut self, message: impl Into<String>) -> Self {
+        self.call_errors
+            .insert(M::TOKEN.to_string(), message.into());
+        self
+    }
+
     /// Builds the [`TestContext`].
     pub fn build(self) -> TestContext {
         let settings = Settings {
@@ -143,13 +211,19 @@ impl TestContextBuilder {
             config: self.config,
             config_secret_keys: self.config_secret_keys,
         };
-        let monitor = MockMonitor::with_options(
-            self.project,
-            self.stack,
-            self.responses,
-            self.errors,
-            self.preview,
-        );
+        let monitor = MockMonitor::with_options(MockMonitorOptions {
+            project: self.project,
+            stack: self.stack,
+            responses: self.responses,
+            read_responses: self.read_responses,
+            invoke_responses: self.invoke_responses,
+            call_responses: self.call_responses,
+            resource_errors: self.errors,
+            read_errors: self.read_errors,
+            invoke_errors: self.invoke_errors,
+            call_errors: self.call_errors,
+            preview: self.preview,
+        });
         let engine = MockEngine::new();
         let ctx = Context::for_testing(monitor.clone(), engine.clone(), settings);
         TestContext { ctx, monitor, engine }
@@ -186,6 +260,21 @@ impl TestContext {
     /// Returns all `invoke` (provider function) calls made against this context so far.
     pub fn invoked_functions(&self) -> Vec<InvokeRecording> {
         self.monitor.recorded_invocations()
+    }
+
+    /// Returns all `call` (component method) calls made against this context so far.
+    pub fn called_methods(&self) -> Vec<MethodCallRecording> {
+        self.monitor.recorded_calls()
+    }
+
+    /// Returns all `read_resource` calls made against this context so far.
+    pub fn read_resources(&self) -> Vec<ReadResourceRecording> {
+        self.monitor.recorded_reads()
+    }
+
+    /// Returns all `register_resource_outputs` calls made against this context so far.
+    pub fn registered_outputs(&self) -> Vec<OutputsRegistration> {
+        self.monitor.recorded_outputs()
     }
 
     /// Returns all log messages sent to the engine from this context so far.
@@ -437,4 +526,182 @@ mod tests {
         assert_eq!(logs[0].message, "test message");
         assert_eq!(logs[0].severity, 1); // INFO
     }
+
+    // --- read_resource via TestContextBuilder ---
+
+    #[tokio::test]
+    async fn test_with_read_response_and_recording() {
+        use crate::resource::ReadBuilder;
+        let test_ctx = TestContextBuilder::new()
+            .with_read_response::<TestBucket>(
+                "imported",
+                serde_json::json!({ "arn": "arn:test:::imported" }),
+            )
+            .build();
+
+        let result: RegisteredResource<TestBucket> =
+            ReadBuilder::new(test_ctx.context(), "imported", "external-id-1")
+                .await
+                .unwrap();
+
+        assert_eq!(result.outputs.arn.as_deref(), Some("arn:test:::imported"));
+        let reads = test_ctx.read_resources();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].id, "external-id-1");
+        assert_eq!(reads[0].name, "imported");
+    }
+
+    #[tokio::test]
+    async fn test_with_read_error_propagates() {
+        use crate::resource::ReadBuilder;
+        let test_ctx = TestContextBuilder::new()
+            .with_read_error::<TestBucket>("missing", "no such resource")
+            .build();
+
+        let result: crate::error::Result<RegisteredResource<TestBucket>> =
+            ReadBuilder::new(test_ctx.context(), "missing", "id-xyz").await;
+        let Err(err) = result else { panic!("expected an error") };
+        assert!(err.to_string().contains("no such resource"));
+    }
+
+    // --- invoke via TestContextBuilder ---
+
+    #[tokio::test]
+    async fn test_with_invoke_response_and_called_methods_accessor() {
+        use crate::invoke::{InvokeBuilder, ProviderFunction};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug)]
+        struct GetThing;
+
+        #[derive(Serialize)]
+        struct GetThingArgs {
+            input: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GetThingReturns {
+            value: Option<String>,
+        }
+
+        impl ProviderFunction for GetThing {
+            const TOKEN: &'static str = "test:fn:getThing";
+            type Args = GetThingArgs;
+            type Returns = GetThingReturns;
+        }
+
+        let test_ctx = TestContextBuilder::new()
+            .with_invoke_response::<GetThing>(serde_json::json!({ "value": "v1" }))
+            .build();
+
+        let result = InvokeBuilder::<GetThing, _, _>::new(
+            test_ctx.context(),
+            GetThingArgs { input: "x".into() },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.value.as_deref(), Some("v1"));
+        assert_eq!(test_ctx.invoked_functions().len(), 1);
+        assert_eq!(test_ctx.invoked_functions()[0].token, "test:fn:getThing");
+    }
+
+    #[tokio::test]
+    async fn test_with_invoke_error_propagates() {
+        use crate::invoke::{InvokeBuilder, ProviderFunction};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug)]
+        struct GetThing;
+
+        #[derive(Serialize)]
+        struct GetThingArgs {}
+
+        #[derive(Debug, Deserialize)]
+        struct GetThingReturns {}
+
+        impl ProviderFunction for GetThing {
+            const TOKEN: &'static str = "test:fn:getBoom";
+            type Args = GetThingArgs;
+            type Returns = GetThingReturns;
+        }
+
+        let test_ctx = TestContextBuilder::new()
+            .with_invoke_error::<GetThing>("provider blew up")
+            .build();
+
+        let err = InvokeBuilder::<GetThing, _, _>::new(test_ctx.context(), GetThingArgs {})
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("provider blew up"));
+    }
+
+    // --- call via TestContextBuilder ---
+
+    #[tokio::test]
+    async fn test_with_call_response_and_called_methods_accessor() {
+        use crate::invoke::{CallBuilder, ComponentMethod};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug)]
+        struct DoThing;
+
+        #[derive(Serialize)]
+        struct DoThingArgs {
+            n: i64,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct DoThingReturns {
+            doubled: Option<i64>,
+        }
+
+        impl ComponentMethod for DoThing {
+            const TOKEN: &'static str = "test:comp:Comp/doThing";
+            type Args = DoThingArgs;
+            type Returns = DoThingReturns;
+        }
+
+        let test_ctx = TestContextBuilder::new()
+            .with_call_response::<DoThing>(serde_json::json!({ "doubled": 8 }))
+            .build();
+
+        let result =
+            CallBuilder::<DoThing, _, _>::new(test_ctx.context(), DoThingArgs { n: 4 })
+                .await
+                .unwrap();
+        assert_eq!(result.result.doubled, Some(8));
+        assert_eq!(test_ctx.called_methods().len(), 1);
+        assert_eq!(test_ctx.called_methods()[0].token, "test:comp:Comp/doThing");
+    }
+
+    #[tokio::test]
+    async fn test_with_call_error_propagates() {
+        use crate::invoke::{CallBuilder, ComponentMethod};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug)]
+        struct DoThing;
+
+        #[derive(Serialize)]
+        struct DoThingArgs {}
+
+        #[derive(Debug, Deserialize)]
+        struct DoThingReturns {}
+
+        impl ComponentMethod for DoThing {
+            const TOKEN: &'static str = "test:comp:Comp/boom";
+            type Args = DoThingArgs;
+            type Returns = DoThingReturns;
+        }
+
+        let test_ctx = TestContextBuilder::new()
+            .with_call_error::<DoThing>("method failed")
+            .build();
+
+        let err = CallBuilder::<DoThing, _, _>::new(test_ctx.context(), DoThingArgs {})
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("method failed"));
+    }
+
 }

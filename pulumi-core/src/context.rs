@@ -431,10 +431,10 @@ mod tests {
     #[test]
     fn test_get_config_float() {
         let s = test_settings(HashMap::from([
-            ("app:rate".into(), "3.14".into()),
+            ("app:rate".into(), "2.5".into()),
             ("app:bad".into(), "abc".into()),
         ]));
-        assert!((s.get_config_float("app:rate").unwrap().unwrap() - 3.14).abs() < f64::EPSILON);
+        assert!((s.get_config_float("app:rate").unwrap().unwrap() - 2.5).abs() < f64::EPSILON);
         assert_eq!(s.get_config_float("app:missing").unwrap(), None);
         assert!(s.get_config_float("app:bad").is_err());
     }
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn test_require_config_bool() {
         let s = test_settings(HashMap::from([("app:flag".into(), "true".into())]));
-        assert_eq!(s.require_config_bool("app:flag").unwrap(), true);
+        assert!(s.require_config_bool("app:flag").unwrap());
         assert!(s.require_config_bool("app:missing").is_err());
     }
 
