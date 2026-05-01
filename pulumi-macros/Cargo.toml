@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Derive macros for the Pulumi Rust SDK"
 license = "Apache-2.0"
+repository = "https://github.com/avtrujillo/pulumi-rs"
 
 [lib]
 proc-macro = true
