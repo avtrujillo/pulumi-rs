@@ -1,0 +1,118 @@
+{
+  "output": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/output.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/output.rs": "3f8c516a54174413",
+      "upstream/sdk/go/pulumi/types.go": "94d194e7ffa5d0c3",
+      "upstream/sdk/go/pulumi/types_builtins.go": "fc0de733e1df2911",
+      "upstream/sdk/nodejs/output.ts": "d559aea46475134c",
+      "upstream/sdk/python/lib/pulumi/output.py": "bbfbad221a12c3ac"
+    }
+  },
+  "resource": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/resource.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/resource.rs": "5fbb6716de60af32",
+      "upstream/sdk/go/pulumi/resource.go": "2ae61aa4683651c3",
+      "upstream/sdk/nodejs/resource.ts": "62f11a5e346595b7",
+      "upstream/sdk/nodejs/runtime/resource.ts": "400f80941d5fa5f2",
+      "upstream/sdk/python/lib/pulumi/resource.py": "85bed40ce4e42810",
+      "upstream/sdk/python/lib/pulumi/runtime/resource.py": "afe2bf273ff12111"
+    }
+  },
+  "context": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/context.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/context.rs": "6e17e76d8d838e96",
+      "upstream/sdk/go/pulumi/context.go": "a1307203f36512d4",
+      "upstream/sdk/go/pulumi/config/get.go": "4552d42225efa2db",
+      "upstream/sdk/go/pulumi/config/require.go": "ad3a193155226367",
+      "upstream/sdk/nodejs/runtime/settings.ts": "dabe63688363ba24",
+      "upstream/sdk/nodejs/config.ts": "77f001d9a0302bc6",
+      "upstream/sdk/python/lib/pulumi/runtime/settings.py": "6bc644740241cfc7",
+      "upstream/sdk/python/lib/pulumi/config.py": "3e2940bce9e815e8"
+    }
+  },
+  "invoke": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/invoke.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/invoke.rs": "28119125a1fd5c73",
+      "upstream/sdk/go/pulumi/rpc.go": "ca4fb15a622cc44a",
+      "upstream/sdk/nodejs/invoke.ts": "e7a99fb6d792e288",
+      "upstream/sdk/nodejs/runtime/invoke.ts": "d69dff4f5c9320d8",
+      "upstream/sdk/python/lib/pulumi/invoke.py": "ef067936662bee38",
+      "upstream/sdk/python/lib/pulumi/runtime/invoke.py": "a9b0b4bb7af8b841"
+    }
+  },
+  "log": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/log.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/log.rs": "4e93e1f6b06ce981",
+      "upstream/sdk/go/pulumi/log.go": "0302ed5988c8684d",
+      "upstream/sdk/nodejs/runtime/index.ts": "8cfffb81912f86b4",
+      "upstream/sdk/python/lib/pulumi/log.py": "17dc3212d697c23b"
+    }
+  },
+  "asset": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "MAJOR GAPS",
+    "output": "review-output/2026-05-06/asset.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/asset.rs": "0f3be5951cb93019",
+      "upstream/sdk/go/pulumi/asset.go": "964f070f9a7027e6",
+      "upstream/sdk/nodejs/asset/asset.ts": "3df7d5bcf8fb85c1",
+      "upstream/sdk/nodejs/asset/archive.ts": "7759fec874174220",
+      "upstream/sdk/python/lib/pulumi/asset.py": "eccd71b1e5dfab0f"
+    }
+  },
+  "stack_reference": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/stack_reference.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/stack_reference.rs": "0b5d911e05860820",
+      "upstream/sdk/go/pulumi/stack_reference.go": "4299427fbccd2ede",
+      "upstream/sdk/nodejs/stackReference.ts": "e514738ae28a36df",
+      "upstream/sdk/nodejs/runtime/stack.ts": "e9ff6b4e7ee343fa",
+      "upstream/sdk/python/lib/pulumi/runtime/stack.py": "66185255ab92c389"
+    }
+  },
+  "transform": {
+    "status": "done",
+    "date": "2026-05-06",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-06/transform.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/transform.rs": "243610c46ca87f00",
+      "upstream/sdk/go/pulumi/transform.go": "c213a718efc9a353",
+      "upstream/sdk/go/pulumi/transformation.go": "74b602f90276bf16",
+      "upstream/sdk/nodejs/runtime/callbacks.ts": "79fcc101ae137b69",
+      "upstream/sdk/python/lib/pulumi/runtime/_callbacks.py": "11955f7d904b7ec1"
+    }
+  }
+}

@@ -1,0 +1,174 @@
+# SDK Review Module Mapping
+#
+# Each entry maps a Rust SDK source file to its counterparts in Go, Node.js,
+# and Python. Used by sdk_review.py to drive cross-language comparison reviews.
+#
+# Paths are relative to the repository root.
+
+modules:
+  # ── pulumi-core ──────────────────────────────────────────────────────────
+
+  - name: output
+    description: "Output<T> type, combinators (map, flat_map, all), resolution"
+    rust: pulumi-core/src/output.rs
+    go:
+      - upstream/sdk/go/pulumi/types.go
+      - upstream/sdk/go/pulumi/types_builtins.go
+    nodejs:
+      - upstream/sdk/nodejs/output.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/output.py
+
+  - name: resource
+    description: "Resource trait, ResourceBuilder, ComponentBuilder, ReadBuilder, resource options"
+    rust: pulumi-core/src/resource.rs
+    go:
+      - upstream/sdk/go/pulumi/resource.go
+    nodejs:
+      - upstream/sdk/nodejs/resource.ts
+      - upstream/sdk/nodejs/runtime/resource.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/resource.py
+      - upstream/sdk/python/lib/pulumi/runtime/resource.py
+
+  - name: context
+    description: "Context<M,E>, Settings, PULUMI_* env vars, config access"
+    rust: pulumi-core/src/context.rs
+    go:
+      - upstream/sdk/go/pulumi/context.go
+      - upstream/sdk/go/pulumi/config/get.go
+      - upstream/sdk/go/pulumi/config/require.go
+    nodejs:
+      - upstream/sdk/nodejs/runtime/settings.ts
+      - upstream/sdk/nodejs/config.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/runtime/settings.py
+      - upstream/sdk/python/lib/pulumi/config.py
+
+  - name: invoke
+    description: "ProviderFunction trait, InvokeBuilder, ComponentMethod, CallBuilder"
+    rust: pulumi-core/src/invoke.rs
+    go:
+      - upstream/sdk/go/pulumi/rpc.go
+    nodejs:
+      - upstream/sdk/nodejs/invoke.ts
+      - upstream/sdk/nodejs/runtime/invoke.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/invoke.py
+      - upstream/sdk/python/lib/pulumi/runtime/invoke.py
+
+  - name: log
+    description: "Engine logging (debug/info/warn/error/status)"
+    rust: pulumi-core/src/log.rs
+    go:
+      - upstream/sdk/go/pulumi/log.go
+    nodejs:
+      - upstream/sdk/nodejs/runtime/index.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/log.py
+
+  - name: asset
+    description: "Asset and Archive types"
+    rust: pulumi-core/src/asset.rs
+    go:
+      - upstream/sdk/go/pulumi/asset.go
+    nodejs:
+      - upstream/sdk/nodejs/asset/asset.ts
+      - upstream/sdk/nodejs/asset/archive.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/asset.py
+
+  - name: stack_reference
+    description: "Cross-stack references and output access"
+    rust: pulumi-core/src/stack_reference.rs
+    go:
+      - upstream/sdk/go/pulumi/stack_reference.go
+    nodejs:
+      - upstream/sdk/nodejs/stackReference.ts
+      - upstream/sdk/nodejs/runtime/stack.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/runtime/stack.py
+
+  - name: transform
+    description: "Stack-level resource transforms (register_stack_transform)"
+    rust: pulumi-core/src/transform.rs
+    go:
+      - upstream/sdk/go/pulumi/transform.go
+      - upstream/sdk/go/pulumi/transformation.go
+    nodejs:
+      - upstream/sdk/nodejs/runtime/callbacks.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/runtime/_callbacks.py
+
+  - name: error
+    description: "Error enum variants: transport, RPC, serde, resource, invoke, custom"
+    rust: pulumi-core/src/error.rs
+    go:
+      - upstream/sdk/go/pulumi/errors/errors.go
+    nodejs:
+      - upstream/sdk/nodejs/errors.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/errors.py
+
+  - name: serde
+    description: "JSON <-> protobuf Struct wire format, secret/unknown sentinels"
+    rust: pulumi-core/src/serde.rs
+    go:
+      - upstream/sdk/go/pulumi/rpc.go
+    nodejs:
+      - upstream/sdk/nodejs/runtime/rpc.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/runtime/rpc.py
+
+  - name: connection
+    description: "MonitorConnection/EngineConnection traits, gRPC client wrappers, MockMonitor/MockEngine"
+    rust: pulumi-core/src/connection.rs
+    go:
+      - upstream/sdk/go/pulumi/context.go
+    nodejs:
+      - upstream/sdk/nodejs/runtime/settings.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/runtime/_grpc_settings.py
+
+  # ── pulumi-automation ─────────────────────────────────────────────────────
+
+  - name: automation_stack
+    description: "Automation API: stack lifecycle (up/preview/destroy/refresh), outputs, history"
+    rust: pulumi-automation/src/stack.rs
+    go:
+      - upstream/sdk/go/auto/stack.go
+    nodejs:
+      - upstream/sdk/nodejs/automation/stack.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/automation/_stack.py
+
+  - name: automation_workspace
+    description: "Automation API: local workspace, stack management, plugin ops"
+    rust: pulumi-automation/src/workspace.rs
+    go:
+      - upstream/sdk/go/auto/workspace.go
+      - upstream/sdk/go/auto/local_workspace.go
+    nodejs:
+      - upstream/sdk/nodejs/automation/workspace.ts
+      - upstream/sdk/nodejs/automation/localWorkspace.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/automation/_workspace.py
+      - upstream/sdk/python/lib/pulumi/automation/_local_workspace.py
+
+  - name: automation_config
+    description: "Automation API: stack config and secret management"
+    rust: pulumi-automation/src/config.rs
+    go: []
+    nodejs:
+      - upstream/sdk/nodejs/automation/config.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/automation/_config.py
+
+  - name: automation_events
+    description: "Automation API: event streaming (engine events, resource events)"
+    rust: pulumi-automation/src/event.rs
+    go: []
+    nodejs:
+      - upstream/sdk/nodejs/automation/events.ts
+    python:
+      - upstream/sdk/python/lib/pulumi/automation/events.py
