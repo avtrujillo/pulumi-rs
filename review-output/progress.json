@@ -114,5 +114,97 @@
       "upstream/sdk/nodejs/runtime/callbacks.ts": "79fcc101ae137b69",
       "upstream/sdk/python/lib/pulumi/runtime/_callbacks.py": "11955f7d904b7ec1"
     }
+  },
+  "error": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/error.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/error.rs": "2cddf8b8ed2f89e8",
+      "upstream/sdk/go/pulumi/errors/errors.go": "adf79f831f409471",
+      "upstream/sdk/nodejs/errors.ts": "93b52887fb91dcf5",
+      "upstream/sdk/python/lib/pulumi/errors.py": "31ec8dcdbab1b78d"
+    }
+  },
+  "serde": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/serde.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/serde.rs": "d3673c3cbec7178a",
+      "upstream/sdk/go/pulumi/rpc.go": "ca4fb15a622cc44a",
+      "upstream/sdk/nodejs/runtime/rpc.ts": "c4fd3faff125ac78",
+      "upstream/sdk/python/lib/pulumi/runtime/rpc.py": "69b4a66e7b43e311"
+    }
+  },
+  "connection": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/connection.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-core/src/connection.rs": "632ff064bb92cd1d",
+      "upstream/sdk/go/pulumi/context.go": "a1307203f36512d4",
+      "upstream/sdk/nodejs/runtime/settings.ts": "dabe63688363ba24",
+      "upstream/sdk/python/lib/pulumi/runtime/_grpc_settings.py": "d06092a9a3c9559e"
+    }
+  },
+  "automation_stack": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/automation_stack.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-automation/src/stack.rs": "e77ea3000f5f4687",
+      "upstream/sdk/go/auto/stack.go": "2d2de5c48e115cd7",
+      "upstream/sdk/nodejs/automation/stack.ts": "95b0f1ddec6c7348",
+      "upstream/sdk/python/lib/pulumi/automation/_stack.py": "1c5e654c2b42ebd5"
+    }
+  },
+  "automation_workspace": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "MAJOR GAPS",
+    "output": "review-output/2026-05-09/automation_workspace.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-automation/src/workspace.rs": "72324d62ab764686",
+      "upstream/sdk/go/auto/workspace.go": "05ed13dfd4001fc9",
+      "upstream/sdk/go/auto/local_workspace.go": "cd062c1fb5474eb6",
+      "upstream/sdk/nodejs/automation/workspace.ts": "070688eeca470e6a",
+      "upstream/sdk/nodejs/automation/localWorkspace.ts": "6879eb7325b098a0",
+      "upstream/sdk/python/lib/pulumi/automation/_workspace.py": "d6a017d84a9a270f",
+      "upstream/sdk/python/lib/pulumi/automation/_local_workspace.py": "afe3ee21cdde7a23"
+    }
+  },
+  "automation_config": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/automation_config.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-automation/src/config.rs": "915b6b894628e078",
+      "upstream/sdk/nodejs/automation/config.ts": "9cc8edd3fc714d59",
+      "upstream/sdk/python/lib/pulumi/automation/_config.py": "d1ee0d7d08c2b151"
+    }
+  },
+  "automation_events": {
+    "status": "done",
+    "date": "2026-05-09",
+    "verdict": "COMPLETE",
+    "output": "review-output/2026-05-09/automation_events.md",
+    "hashes": {
+      "upstream_sha": "2fbc5085993bccda",
+      "pulumi-automation/src/event.rs": "b5ee4c58577e54e4",
+      "upstream/sdk/nodejs/automation/events.ts": "67efa824c8348739",
+      "upstream/sdk/python/lib/pulumi/automation/events.py": "7c2ef6529dc4dc08"
+    }
   }
 }
