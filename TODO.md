@@ -243,6 +243,53 @@ third-party integrations) depend on stable interfaces.
    version once available, so day-to-day `cargo test` exercises consumption
    too — at the cost of testdata lagging HEAD.
 
+## `flat_map` Secret/Known Propagation — In Progress
+
+**Crate:** `pulumi-core`
+
+`Output::flat_map` currently initializes the result's `meta` from the outer output synchronously, then merges the inner output's metadata inside a lazy async block. This means `is_known()` / `is_secret()` on the result don't reflect the inner output's metadata until the future is driven.
+
+The fix requires refactoring `Output<T>` to store a `JoinHandle` instead of a `Shared<BoxFuture<T>>`, so the inner computation is spawned eagerly and the handle can be awaited or checked for completion. Two tests are currently failing:
+
+- `output::tests::test_flat_map_propagates_secret_from_inner`
+- `output::tests::test_flat_map_propagates_unknown_from_inner`
+
+## `output.rs` — Dep Tracking Refactor
+
+**Crate:** `pulumi-core`
+
+The current `deps: Mutex<Vec<String>>` in `OutputMeta` accumulates URN strings lazily as combinators resolve. Evaluate whether the representation, locking strategy, and propagation model are correct and efficient — particularly for deeply chained outputs.
+
+## Audit `std::sync` Usage in Async Contexts
+
+**Crate:** all
+
+Search for uses of `std::sync::Mutex`, `std::sync::RwLock`, and similar primitives held across `.await` points. These can deadlock or cause unexpected blocking on a tokio worker thread. Replace with `tokio::sync` equivalents where appropriate.
+
+## Audit `unwrap()` and Other Potential Panics
+
+**Crate:** all
+
+Search the codebase for `unwrap()`, `expect()`, `panic!`, and indexing operations that can panic. For each, determine whether the panic is truly unreachable (and should be replaced with a clearer `unreachable!()` or removed) or whether it represents a real failure mode that should surface as a `Result` or `Error` instead.
+
+## `output.rs` — Audit `.clone()` Usage
+
+**Crate:** `pulumi-core`
+
+`output.rs` clones futures, `Arc`s, and metadata structs heavily to satisfy the borrow checker across async boundaries. Audit all `.clone()` calls to determine which are unavoidable and which indicate a structural problem (e.g., unnecessary duplication of work, or a design that fights the ownership model).
+
+## Automated Code Review — Compare Against All SDKs
+
+**Crate:** `scripts/`
+
+The review harness currently compares the Rust SDK against a single upstream SDK. Expand coverage to compare against all reference SDKs (Go, TypeScript, Python, .NET) to catch divergences that appear in only one language's implementation.
+
+## Automated Code Review — Fix Remaining Identified Issues
+
+**Crate:** various
+
+The initial automated review pass identified issues beyond secret propagation (which was addressed first). Work through the remaining flagged items from `review-output/` and address them.
+
 ## Stable Rust Support — Non-Goal
 
 **Stable Rust is a non-goal until the next-generation trait solver ships.**

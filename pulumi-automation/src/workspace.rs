@@ -180,7 +180,7 @@ impl LocalWorkspace {
     /// Sets a configuration value for the given stack.
     pub async fn set_config(&self, stack: &str, key: &str, value: &ConfigValue) -> Result<()> {
         let mut args = vec!["config", "set", key, &value.value, "--stack", stack];
-        if value.secret {
+        if value.is_secret {
             args.push("--secret");
         }
         run_pulumi_cmd(&self.work_dir, &args, &self.env_pairs()).await?;

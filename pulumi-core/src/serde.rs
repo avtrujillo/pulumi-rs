@@ -8,9 +8,12 @@ use prost_types::value::Kind;
 use prost_types::{ListValue, Struct, Value};
 use serde_json::Map;
 
-/// Special key used by Pulumi to mark secret values in the wire format.
+/// Special signature key shared by all Pulumi special wire-format types (secrets, assets,
+/// archives, resource references, output values). The value at this key identifies which type.
 pub const SECRET_SIG: &str = "4dabf18193072939515e22adb298388d";
-/// Special key used by Pulumi to mark unknown values.
+/// Value at [`SECRET_SIG`] that marks a struct as a secret wrapper.
+pub const SECRET_VALUE_SIG: &str = "1b47061264138c4ac30d75fd1eb44270";
+/// Sentinel UUID used as a bare string to represent an unknown value during preview.
 pub const UNKNOWN_SIG: &str = "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
 
 /// Converts a `serde_json::Value` to a protobuf `Value`.
@@ -87,15 +90,28 @@ pub fn struct_to_json(s: &Struct) -> serde_json::Value {
 
 /// Wraps a value as a Pulumi secret in the wire format.
 pub fn wrap_secret(value: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
-        "value": value,
-    })
+    let mut map = serde_json::Map::new();
+    map.insert(
+        SECRET_SIG.to_string(),
+        serde_json::Value::String(SECRET_VALUE_SIG.to_string()),
+    );
+    map.insert("value".to_string(), value);
+    serde_json::Value::Object(map)
 }
 
-/// Checks if a protobuf Struct value represents a Pulumi secret.
+/// Checks if a protobuf Struct represents a Pulumi secret wrapper.
+///
+/// Returns `true` only when the struct has the special signature key with the secret-specific
+/// value. A key-only check produces false positives for assets, archives, and resource refs,
+/// which all share the same key but carry a different marker value.
 pub fn is_secret(s: &Struct) -> bool {
-    s.fields.contains_key("4dabf18193072939515e22adb298388d")
+    s.fields
+        .get(SECRET_SIG)
+        .and_then(|v| match &v.kind {
+            Some(Kind::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        })
+        .is_some_and(|v| v == SECRET_VALUE_SIG)
 }
 
 /// Unwraps a Pulumi secret, returning the inner value.
@@ -107,14 +123,12 @@ pub fn unwrap_secret(s: &Struct) -> Option<&Value> {
     }
 }
 
-/// Checks if a protobuf Struct value represents an unknown value.
-pub fn is_unknown(s: &Struct) -> bool {
-    if let Some(sig) = s.fields.get("4dabf18193072939515e22adb298388d")
-        && let Some(Kind::StringValue(v)) = &sig.kind
-    {
-        return v == UNKNOWN_SIG;
-    }
-    false
+/// Checks if a protobuf Value represents an unknown (preview-time placeholder).
+///
+/// Unknown values are encoded as a bare `StringValue` containing [`UNKNOWN_SIG`], not as a
+/// `Struct`. The previous `&Struct` signature could never return `true`; this fixes it.
+pub fn is_unknown(v: &Value) -> bool {
+    matches!(&v.kind, Some(Kind::StringValue(s)) if s == UNKNOWN_SIG)
 }
 
 #[cfg(test)]
@@ -137,6 +151,7 @@ mod tests {
         assert_eq!(json, back);
     }
 
+    /// Wrap a value as a secret, convert to proto Struct, and verify detection + unwrapping.
     #[test]
     fn test_secret_wrapping() {
         let val = serde_json::json!("my-password");
@@ -147,5 +162,45 @@ mod tests {
 
         let unwrapped = unwrap_secret(&s).unwrap();
         assert_eq!(proto_value_to_json(unwrapped), val);
+    }
+
+    /// A struct with the shared signature key but an asset marker value must not be detected
+    /// as a secret — guards against the false-positive that a key-only check would produce.
+    #[test]
+    fn test_is_secret_no_false_positive_for_asset() {
+        let asset_sig_value = "c44067f5952c0a294b673a41bacd8c17";
+        let asset_like = serde_json::json!({
+            "4dabf18193072939515e22adb298388d": asset_sig_value,
+            "path": "/some/file"
+        });
+        let s = json_to_struct(&asset_like);
+        assert!(!is_secret(&s), "asset-like struct should not be detected as secret");
+    }
+
+    /// A bare StringValue containing the unknown sentinel UUID must be detected as unknown.
+    #[test]
+    fn test_is_unknown_detects_sentinel_string() {
+        let unknown = Value {
+            kind: Some(Kind::StringValue(UNKNOWN_SIG.to_string())),
+        };
+        assert!(is_unknown(&unknown));
+    }
+
+    /// A StringValue with any other content is not unknown.
+    #[test]
+    fn test_is_unknown_false_for_regular_string() {
+        let val = Value {
+            kind: Some(Kind::StringValue("not-an-unknown".to_string())),
+        };
+        assert!(!is_unknown(&val));
+    }
+
+    /// A Struct value (even one shaped like a secret wrapper) is never an unknown.
+    #[test]
+    fn test_is_unknown_false_for_struct() {
+        let s = Value {
+            kind: Some(Kind::StructValue(Struct::default())),
+        };
+        assert!(!is_unknown(&s));
     }
 }

@@ -102,7 +102,7 @@ impl NativeStack {
         let mut config_secret_keys = Vec::new();
         for (k, v) in &config_map {
             config.insert(k.clone(), v.value.clone());
-            if v.secret {
+            if v.is_secret {
                 config_secret_keys.push(k.clone());
             }
         }
@@ -392,9 +392,9 @@ mod tests {
         let all = stack.get_all_config().unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all["myproject:region"].value, "us-east-1");
-        assert!(!all["myproject:region"].secret);
+        assert!(!all["myproject:region"].is_secret);
         assert_eq!(all["myproject:token"].value, "s3cr3t");
-        assert!(all["myproject:token"].secret);
+        assert!(all["myproject:token"].is_secret);
     }
 
     #[test]
