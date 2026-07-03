@@ -297,8 +297,12 @@ engine path:
   fallback and deleted after the first YAML save. The secrets manager is
   cached per stack handle (PBKDF2 at 1M iterations is ~1s per derivation).
 
-Not yet verified: actual round-trip against a real `pulumi` CLI binary
-(would make a good integration test — needs `pulumi` on PATH).
+Verified end-to-end: `integration-tests/tests/native_interop.rs` round-trips
+secrets in both directions against a real `pulumi` CLI (validated against
+v3.170.0) — CLI-written secrets decrypt natively, natively-written secrets
+decrypt in the CLI, and a native full-file rewrite keeps CLI ciphertexts
+readable. Run with `cargo test -p integration-tests --features integration`
+(skips when `pulumi` is not on PATH).
 
 ## `output.rs` — Dep Tracking Refactor
 
