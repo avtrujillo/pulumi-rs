@@ -874,7 +874,9 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "config", "ls", "--stack", "dev"]);
         assert!(matches!(
             cli.command,
-            Commands::Config { command: ConfigCommands::Ls { stack, json: false } }
+            Commands::Config {
+                command: ConfigCommands::Ls { stack, json: false, show_secrets: false }
+            }
             if stack == "dev"
         ));
     }
@@ -884,7 +886,22 @@ mod tests {
         let cli = Cli::parse_from(["pulumi-rs", "config", "ls", "--stack", "dev", "--json"]);
         assert!(matches!(
             cli.command,
-            Commands::Config { command: ConfigCommands::Ls { stack, json: true } }
+            Commands::Config {
+                command: ConfigCommands::Ls { stack, json: true, show_secrets: false }
+            }
+            if stack == "dev"
+        ));
+    }
+
+    #[test]
+    fn test_config_ls_show_secrets() {
+        let cli =
+            Cli::parse_from(["pulumi-rs", "config", "ls", "--stack", "dev", "--show-secrets"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Config {
+                command: ConfigCommands::Ls { stack, json: false, show_secrets: true }
+            }
             if stack == "dev"
         ));
     }

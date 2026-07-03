@@ -240,12 +240,18 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
     ///
     /// If the source output was rejected with an error, the error propagates
     /// and `f` is never called.
+    ///
+    /// The inner output's known/secret metadata is propagated eagerly: if the
+    /// source is already resolved, `f` runs synchronously inside this call so
+    /// `is_known()`/`is_secret()` on the result reflect the inner output
+    /// immediately. Otherwise the composition is driven on a background task
+    /// (when a Tokio runtime is available), so the metadata converges as soon
+    /// as the source resolves rather than waiting for the result to be polled.
     pub fn flat_map<U, F>(&self, f: F) -> Output<U>
     where
         U: Clone + Send + Sync + 'static,
         F: FnOnce(T) -> Output<U> + Send + 'static,
     {
-        let source = self.future.clone();
         let source_meta = self.meta.clone();
 
         let meta = Arc::new(OutputMeta {
@@ -255,6 +261,40 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         });
         let out_meta = meta.clone();
 
+        // Fast path: the source has already resolved, so run `f` now and
+        // merge the inner metadata before returning. Deps still merge inside
+        // the future because they sit behind an async mutex.
+        if let Some(resolved) = self.future.clone().now_or_never() {
+            let future = match resolved {
+                Ok(val) => {
+                    let inner = f(val);
+                    if !inner.meta.is_known() {
+                        meta.set_known(false);
+                    }
+                    if inner.meta.is_secret() {
+                        meta.set_secret(true);
+                    }
+                    let inner_meta = inner.meta.clone();
+                    let inner_future = inner.future;
+                    async move {
+                        out_meta.extend_deps(source_meta.get_deps().await).await;
+                        out_meta.extend_deps(inner_meta.get_deps().await).await;
+                        inner_future.await
+                    }
+                    .boxed()
+                    .shared()
+                }
+                Err(e) => async move {
+                    out_meta.extend_deps(source_meta.get_deps().await).await;
+                    Err(e)
+                }
+                .boxed()
+                .shared(),
+            };
+            return Output { future, meta };
+        }
+
+        let source = self.future.clone();
         let future = async move {
             out_meta.extend_deps(source_meta.get_deps().await).await;
             match source.await {
@@ -268,6 +308,14 @@ impl<T: Clone + Send + Sync + 'static> Output<T> {
         }
         .boxed()
         .shared();
+
+        // Drive the composition eagerly so the metadata merge happens once
+        // the source resolves, even if nobody polls the result. `Shared`
+        // makes this safe: whichever of the background task or an awaiter
+        // polls first does the work, the other observes the cached result.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(future.clone().map(|_| ()));
+        }
 
         Output { future, meta }
     }
@@ -716,5 +764,25 @@ mod tests {
         let known = Output::new(1);
         let result = known.flat_map(|_| Output::<i32>::unknown());
         assert!(!result.is_known());
+    }
+
+    /// When the source is still pending at `flat_map` time, the inner
+    /// metadata converges once the source resolves — without the result
+    /// ever being polled by the caller.
+    #[tokio::test]
+    async fn test_flat_map_pending_source_converges_after_resolve() {
+        let (out, resolver) = Output::<i32>::unresolved();
+        let result = out.flat_map(|_| Output::secret(99));
+        assert!(!result.is_secret());
+
+        resolver.resolve(1);
+        for _ in 0..100 {
+            if result.is_secret() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(result.is_secret());
+        assert_eq!(result.get().await.unwrap(), 99);
     }
 }
