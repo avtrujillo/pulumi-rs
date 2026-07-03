@@ -179,19 +179,19 @@ impl LocalWorkspace {
 
     /// Sets a configuration value for the given stack.
     pub async fn set_config(&self, stack: &str, key: &str, value: &ConfigValue) -> Result<()> {
-        let mut args = vec!["config", "set", key, &value.value, "--stack", stack];
-        if value.is_secret {
-            args.push("--secret");
-        }
+        let args = set_config_args(stack, key, value);
         run_pulumi_cmd(&self.work_dir, &args, &self.env_pairs()).await?;
         Ok(())
     }
 
     /// Gets all configuration values for the given stack.
+    ///
+    /// Passes `--show-secrets` (as all upstream automation SDKs do), so secret
+    /// values are returned decrypted with `is_secret: true` rather than masked.
     pub async fn get_all_config(&self, stack: &str) -> Result<HashMap<String, ConfigValue>> {
         let output = run_pulumi_cmd(
             &self.work_dir,
-            &["config", "--stack", stack, "--json"],
+            &["config", "--stack", stack, "--show-secrets", "--json"],
             &self.env_pairs(),
         )
         .await?;
@@ -281,5 +281,56 @@ impl LocalWorkspace {
         };
         run_pulumi_cmd(&self.work_dir, &args, &self.env_pairs()).await?;
         Ok(())
+    }
+}
+
+/// Builds the argument list for `pulumi config set`.
+///
+/// The value is passed after a `--` separator so that values beginning with
+/// `-` cannot be interpreted as flags by the CLI (argument injection). The
+/// secrecy flag is always explicit (`--secret` / `--plaintext`), matching the
+/// upstream automation SDKs.
+fn set_config_args<'a>(stack: &'a str, key: &'a str, value: &'a ConfigValue) -> Vec<&'a str> {
+    let mut args = vec!["config", "set", key, "--stack", stack];
+    args.push(if value.is_secret { "--secret" } else { "--plaintext" });
+    args.push("--");
+    args.push(&value.value);
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Plaintext values get `--plaintext` and sit after the `--` separator.
+    #[test]
+    fn set_config_args_plaintext() {
+        let cv = ConfigValue::plaintext("us-east-1");
+        let args = set_config_args("dev", "proj:region", &cv);
+        assert_eq!(
+            args,
+            ["config", "set", "proj:region", "--stack", "dev", "--plaintext", "--", "us-east-1"]
+        );
+    }
+
+    /// Secret values get `--secret`.
+    #[test]
+    fn set_config_args_secret() {
+        let cv = ConfigValue::secret("hunter2");
+        let args = set_config_args("dev", "proj:token", &cv);
+        assert_eq!(
+            args,
+            ["config", "set", "proj:token", "--stack", "dev", "--secret", "--", "hunter2"]
+        );
+    }
+
+    /// A value that looks like a flag must appear after `--`, never before it.
+    #[test]
+    fn set_config_args_flag_like_value_is_not_injectable() {
+        let cv = ConfigValue::plaintext("--secret");
+        let args = set_config_args("dev", "proj:tricky", &cv);
+        let sep = args.iter().position(|a| *a == "--").unwrap();
+        assert_eq!(args[sep + 1..], ["--secret"]);
+        assert!(!args[..sep].contains(&"--secret"));
     }
 }

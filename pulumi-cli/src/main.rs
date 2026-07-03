@@ -199,6 +199,9 @@ enum ConfigCommands {
         /// Emit output as JSON.
         #[arg(long)]
         json: bool,
+        /// Show secret values in plaintext instead of masking them.
+        #[arg(long)]
+        show_secrets: bool,
     },
 }
 
@@ -576,13 +579,22 @@ async fn main() {
                 ws.set_config(&stack, &key, &cv).await
             }
             ConfigCommands::Rm { key, stack } => ws.remove_config(&stack, &key).await,
-            ConfigCommands::Ls { stack, json } => match ws.get_all_config(&stack).await {
-                Ok(config) => {
+            ConfigCommands::Ls { stack, json, show_secrets } => match ws.get_all_config(&stack).await {
+                Ok(mut config) => {
+                    // get_all_config returns decrypted secrets; mask them
+                    // unless the user explicitly opted in, matching `pulumi config`.
+                    if !show_secrets {
+                        for cv in config.values_mut() {
+                            if cv.is_secret {
+                                cv.value = "[secret]".to_string();
+                            }
+                        }
+                    }
                     if json {
                         println!("{}", serde_json::to_string_pretty(&config).unwrap());
                     } else {
                         for (key, cv) in &config {
-                            let secret_marker = if cv.secret { " [secret]" } else { "" };
+                            let secret_marker = if cv.is_secret && show_secrets { " [secret]" } else { "" };
                             println!("{key}: {}{secret_marker}", cv.value);
                         }
                     }
