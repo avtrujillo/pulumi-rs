@@ -77,7 +77,7 @@ On subsequent `up()` calls, prior state is loaded and used for diffing. On `dest
 
 ## Secret encryption
 
-When `PULUMI_CONFIG_PASSPHRASE` is set (or `EngineOptions::secrets_manager` is provided), secret values in the checkpoint are encrypted at rest using AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation (1M iterations). The ciphertext format (`v1:` + base64(nonce || ciphertext || tag)) is compatible with the Go Pulumi SDK.
+When `PULUMI_CONFIG_PASSPHRASE` is set (or `EngineOptions::secrets_manager` is provided), secret values in the checkpoint are encrypted at rest using AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation (1M iterations). The wire format matches the Go Pulumi CLI's passphrase provider exactly — ciphertext `v1:BASE64(nonce):BASE64(ciphertext || tag)`, salt state `v1:BASE64(salt):<ciphertext of "pulumi">` — so values are interchangeable with the real CLI.
 
 The `SecretsManager` trait uses RPITIT, matching the `Provider` and `MonitorConnection` patterns. `PassphraseSecretsManager` implements it. Salt is persisted in the checkpoint's `secrets_provider` field so the same key is derived across runs.
 

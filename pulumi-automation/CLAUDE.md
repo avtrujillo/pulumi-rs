@@ -45,7 +45,7 @@ Doctests are disabled (`doctest = false`).
 | `config.rs` | `ConfigValue` — value + secret flag. Constructors: `plaintext()`, `secret()`. Implements `From<String>` and `From<&str>`. |
 | `event.rs` | `EngineEvent` and sub-types (`PreludeEvent`, `ResourcePreEvent`, `SummaryEvent`, `DiagnosticEvent`) for parsing structured CLI JSON output. |
 | `error.rs` | `Error` enum: `CliNotFound`, `CommandFailed`, `Io`, `Json`, `StackNotFound`, `StackAlreadyExists`, `Custom`. |
-| `native.rs` | `NativeStack` — alternative to `Stack` that uses `pulumi-engine` directly instead of CLI subprocess. Feature-gated behind `native-engine`. Methods: `up()`, `preview()`, `destroy()`, `refresh()`. |
+| `native.rs` | `NativeStack` — alternative to `Stack` that uses `pulumi-engine` directly instead of CLI subprocess. Feature-gated behind `native-engine`. Methods: `up()`, `preview()`, `destroy()`, `refresh()`, `with_passphrase()`. Config persists to `Pulumi.<stack>.yaml` in the real CLI's format: secret values are encrypted (`secure:` ciphertext + `encryptionsalt`) via the passphrase from `with_passphrase()` / `PULUMI_CONFIG_PASSPHRASE` / `PULUMI_CONFIG_PASSPHRASE_FILE`; setting or reading secrets without a passphrase is an error. |
 
 ## Result Types
 

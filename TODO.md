@@ -268,6 +268,42 @@ pending source, metadata converges shortly after resolution rather than
 atomically with it — matching the upstream SDKs, where secretness is itself
 promise-like.
 
+## Native Engine — Secret Config Encryption at Rest ✓ Done
+
+**Crates:** `pulumi-engine`, `pulumi-automation`
+
+Two changes, closing the last plaintext-secrets-at-rest gap in the native
+engine path:
+
+- **Go wire-format fix (`pulumi-engine/src/secrets.rs`).** The previous
+  format (hex salt, single-blob `v1:BASE64(nonce||ct||tag)`, passphrase as
+  validation plaintext) did *not* actually match the Go CLI despite the docs
+  claiming so. Now: ciphertext `v1:BASE64(nonce):BASE64(ct||tag)`, salt state
+  `v1:BASE64(salt):<ciphertext of "pulumi">` — true interop with the real
+  CLI's passphrase provider. Pre-existing encrypted checkpoints in the old
+  format are invalidated (pre-release, no compat guarantee). Added
+  `encrypt_sync`/`decrypt_sync`/`salt_state` for non-async callers.
+
+- **`Pulumi.<stack>.yaml` stack file (`pulumi-automation/src/native.rs`).**
+  `NativeStack` config now persists to the real CLI's stack file format
+  instead of a plaintext JSON file: plain values as YAML scalars, secrets as
+  `secure:` ciphertext with a top-level `encryptionsalt`. The stack file's
+  salt is created on first secret write, reuses the checkpoint's salt when
+  one exists, and `engine_options` prefers checkpoint salt then stack-file
+  salt so both artifacts converge on one key. Passphrase comes from
+  `with_passphrase()` (tests), `PULUMI_CONFIG_PASSPHRASE`, or
+  `PULUMI_CONFIG_PASSPHRASE_FILE`; secret operations without one are hard
+  errors. Legacy `.pulumi-rs/<stack>.config.json` files are read as a
+  fallback and deleted after the first YAML save. The secrets manager is
+  cached per stack handle (PBKDF2 at 1M iterations is ~1s per derivation).
+
+Verified end-to-end: `integration-tests/tests/native_interop.rs` round-trips
+secrets in both directions against a real `pulumi` CLI (validated against
+v3.170.0) — CLI-written secrets decrypt natively, natively-written secrets
+decrypt in the CLI, and a native full-file rewrite keeps CLI ciphertexts
+readable. Run with `cargo test -p integration-tests --features integration`
+(skips when `pulumi` is not on PATH).
+
 ## `output.rs` — Dep Tracking Refactor
 
 **Crate:** `pulumi-core`
