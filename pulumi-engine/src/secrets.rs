@@ -2,20 +2,24 @@
 //!
 //! Defines the [`SecretsManager`] trait for pluggable encryption backends, and
 //! [`PassphraseSecretsManager`] which derives an AES-256-GCM key from a user
-//! passphrase via PBKDF2-HMAC-SHA256. The ciphertext format is compatible with
-//! the Go Pulumi SDK's passphrase provider.
+//! passphrase via PBKDF2-HMAC-SHA256. The wire format matches the Go Pulumi
+//! CLI's passphrase provider exactly, so ciphertexts and salt states written
+//! by either implementation can be read by the other.
 //!
-//! ## Ciphertext format
-//!
-//! ```text
-//! "v1:" + base64(nonce[12] || ciphertext || tag[16])
-//! ```
-//!
-//! ## Salt format
+//! ## Ciphertext format (Go: `config.symmetricCrypter.EncryptValue`)
 //!
 //! ```text
-//! "v1:" + hex(salt[8]) + ":" + base64(passphrase_validation_ciphertext)
+//! "v1:" + base64(nonce[12]) + ":" + base64(ciphertext || tag[16])
 //! ```
+//!
+//! ## Salt state format (Go: `passphrase.newPassphraseSecretsManager`)
+//!
+//! ```text
+//! "v1:" + base64(salt[8]) + ":" + <ciphertext of the literal string "pulumi">
+//! ```
+//!
+//! The trailing segment is a validation token: decrypting it must yield
+//! `"pulumi"`, proving the passphrase is correct before any real decryption.
 
 use std::fmt;
 use std::future::Future;
@@ -123,6 +127,10 @@ pub struct PassphraseSecretsManager {
     salt_string: String,
 }
 
+/// The plaintext of the salt state's validation token. The Go CLI encrypts
+/// this exact string and compares on load; we must match it for interop.
+const VALIDATION_PLAINTEXT: &[u8] = b"pulumi";
+
 impl PassphraseSecretsManager {
     /// Create a new manager with a fresh random salt.
     pub fn new(passphrase: &str) -> Result<Self, SecretsError> {
@@ -131,10 +139,10 @@ impl PassphraseSecretsManager {
 
         let key = derive_key(passphrase, &salt);
 
-        // Encrypt the passphrase itself as a validation token — on load we
-        // decrypt this to verify the passphrase is correct before proceeding.
-        let validation = encrypt_bytes(&key, passphrase.as_bytes())?;
-        let salt_string = format!("v1:{}:{}", hex_encode(&salt), validation);
+        // Encrypt the literal "pulumi" as a validation token — on load this
+        // is decrypted and compared to verify the passphrase is correct.
+        let validation = encrypt_bytes(&key, VALIDATION_PLAINTEXT)?;
+        let salt_string = format!("v1:{}:{}", BASE64.encode(salt), validation);
 
         Ok(Self {
             key,
@@ -143,20 +151,21 @@ impl PassphraseSecretsManager {
         })
     }
 
-    /// Restore a manager from a previously persisted salt string.
+    /// Restore a manager from a previously persisted salt state string.
     ///
-    /// The salt string has the format `"v1:HEX_SALT:BASE64_VALIDATION"`.
-    /// The validation ciphertext is decrypted to verify the passphrase.
+    /// The salt state has the format `"v1:BASE64_SALT:VALIDATION_CIPHERTEXT"`.
+    /// The validation ciphertext is decrypted and must yield `"pulumi"`,
+    /// otherwise the passphrase is wrong.
     pub fn from_salt(passphrase: &str, salt_string: &str) -> Result<Self, SecretsError> {
         let parts: Vec<&str> = salt_string.splitn(3, ':').collect();
         if parts.len() != 3 || parts[0] != "v1" {
             return Err(SecretsError::InvalidSalt(
-                "expected format 'v1:HEX_SALT:BASE64_VALIDATION'".to_string(),
+                "expected format 'v1:BASE64_SALT:VALIDATION_CIPHERTEXT'".to_string(),
             ));
         }
 
-        let salt = hex_decode(parts[1]).map_err(|e| {
-            SecretsError::InvalidSalt(format!("bad hex in salt: {e}"))
+        let salt = BASE64.decode(parts[1]).map_err(|e| {
+            SecretsError::InvalidSalt(format!("bad base64 in salt: {e}"))
         })?;
         if salt.len() != SALT_LEN {
             return Err(SecretsError::InvalidSalt(format!(
@@ -170,15 +179,38 @@ impl PassphraseSecretsManager {
 
         let key = derive_key(passphrase, &salt_arr);
 
-        // Validate the passphrase by decrypting the validation token.
-        let validation_ciphertext = parts[2];
-        decrypt_bytes(&key, validation_ciphertext)?;
+        // Validate the passphrase by decrypting the validation token and
+        // checking its plaintext, exactly as the Go CLI does.
+        let validation = decrypt_bytes(&key, parts[2])?;
+        if validation != VALIDATION_PLAINTEXT {
+            return Err(SecretsError::DecryptionFailed);
+        }
 
         Ok(Self {
             key,
             salt: salt_arr,
             salt_string: salt_string.to_string(),
         })
+    }
+
+    /// Synchronously encrypt plaintext bytes into a `"v1:NONCE:CT"` string.
+    ///
+    /// Same operation as [`SecretsManager::encrypt`] without the async
+    /// wrapper, for callers that are not in an async context (e.g. stack
+    /// config file persistence).
+    pub fn encrypt_sync(&self, plaintext: &[u8]) -> Result<String, SecretsError> {
+        encrypt_bytes(&self.key, plaintext)
+    }
+
+    /// Synchronously decrypt a `"v1:NONCE:CT"` ciphertext string.
+    pub fn decrypt_sync(&self, ciphertext: &str) -> Result<Vec<u8>, SecretsError> {
+        decrypt_bytes(&self.key, ciphertext)
+    }
+
+    /// The persisted salt state string (`"v1:BASE64_SALT:VALIDATION"`), as
+    /// stored in `Pulumi.<stack>.yaml`'s `encryptionsalt` and the checkpoint.
+    pub fn salt_state(&self) -> &str {
+        &self.salt_string
     }
 }
 
@@ -209,7 +241,7 @@ impl SecretsManager for PassphraseSecretsManager {
 impl fmt::Debug for PassphraseSecretsManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PassphraseSecretsManager")
-            .field("salt", &hex_encode(&self.salt))
+            .field("salt", &BASE64.encode(self.salt))
             .finish_non_exhaustive()
     }
 }
@@ -225,7 +257,8 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; KEY_LEN] {
     key
 }
 
-/// Encrypt bytes with AES-256-GCM, returning `"v1:BASE64(nonce || ciphertext || tag)"`.
+/// Encrypt bytes with AES-256-GCM, returning
+/// `"v1:BASE64(nonce):BASE64(ciphertext || tag)"` — the Go CLI's format.
 fn encrypt_bytes(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<String, SecretsError> {
     let cipher = Aes256Gcm::new_from_slice(key).expect("key is 32 bytes");
 
@@ -237,57 +270,47 @@ fn encrypt_bytes(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<String, Secret
         .encrypt(nonce, plaintext)
         .map_err(|_| SecretsError::EncryptionFailed)?;
 
-    // Prepend the nonce to the ciphertext for storage.
-    let mut blob = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    blob.extend_from_slice(&nonce_bytes);
-    blob.extend_from_slice(&ciphertext);
-
-    Ok(format!("v1:{}", BASE64.encode(&blob)))
+    Ok(format!(
+        "v1:{}:{}",
+        BASE64.encode(nonce_bytes),
+        BASE64.encode(&ciphertext)
+    ))
 }
 
-/// Decrypt a `"v1:BASE64(...)"` ciphertext string.
+/// Decrypt a `"v1:BASE64(nonce):BASE64(ciphertext || tag)"` string.
 fn decrypt_bytes(key: &[u8; KEY_LEN], ciphertext: &str) -> Result<Vec<u8>, SecretsError> {
-    let encoded = ciphertext.strip_prefix("v1:").ok_or_else(|| {
-        SecretsError::InvalidCiphertext("missing 'v1:' prefix".to_string())
-    })?;
+    let parts: Vec<&str> = ciphertext.splitn(3, ':').collect();
+    if parts.len() != 3 || parts[0] != "v1" {
+        return Err(SecretsError::InvalidCiphertext(
+            "expected format 'v1:BASE64_NONCE:BASE64_CIPHERTEXT'".to_string(),
+        ));
+    }
 
-    let blob = BASE64.decode(encoded).map_err(|e| {
-        SecretsError::InvalidCiphertext(format!("bad base64: {e}"))
+    let nonce_bytes = BASE64.decode(parts[1]).map_err(|e| {
+        SecretsError::InvalidCiphertext(format!("bad base64 in nonce: {e}"))
     })?;
-
-    if blob.len() < NONCE_LEN + 16 {
+    if nonce_bytes.len() != NONCE_LEN {
         return Err(SecretsError::InvalidCiphertext(format!(
-            "ciphertext too short ({} bytes, need at least {})",
-            blob.len(),
-            NONCE_LEN + 16
+            "nonce is {} bytes, expected {NONCE_LEN}",
+            nonce_bytes.len()
         )));
     }
 
-    let (nonce_bytes, ciphertext_bytes) = blob.split_at(NONCE_LEN);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let ciphertext_bytes = BASE64.decode(parts[2]).map_err(|e| {
+        SecretsError::InvalidCiphertext(format!("bad base64 in ciphertext: {e}"))
+    })?;
+    if ciphertext_bytes.len() < 16 {
+        return Err(SecretsError::InvalidCiphertext(format!(
+            "ciphertext too short ({} bytes, need at least 16 for the GCM tag)",
+            ciphertext_bytes.len()
+        )));
+    }
 
+    let nonce = Nonce::from_slice(&nonce_bytes);
     let cipher = Aes256Gcm::new_from_slice(key).expect("key is 32 bytes");
     cipher
-        .decrypt(nonce, ciphertext_bytes)
+        .decrypt(nonce, ciphertext_bytes.as_slice())
         .map_err(|_| SecretsError::DecryptionFailed)
-}
-
-// ---------------------------------------------------------------------------
-// Hex helpers (avoids pulling in a hex crate for 8-byte salts)
-// ---------------------------------------------------------------------------
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err("odd-length hex string".to_string());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +429,40 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    /// The ciphertext must be `v1:BASE64(nonce):BASE64(ct||tag)` — three
+    /// colon-separated segments with a 12-byte nonce — to match the Go CLI.
+    #[test]
+    fn ciphertext_matches_go_wire_format() {
+        let key = derive_key("test-passphrase", b"saltsalt");
+        let ciphertext = encrypt_bytes(&key, b"value").unwrap();
+
+        let parts: Vec<&str> = ciphertext.split(':').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "v1");
+        assert_eq!(BASE64.decode(parts[1]).unwrap().len(), NONCE_LEN);
+        // 5 plaintext bytes + 16-byte GCM tag.
+        assert_eq!(BASE64.decode(parts[2]).unwrap().len(), 5 + 16);
+    }
+
+    /// The salt state must be `v1:BASE64(salt):<ciphertext of "pulumi">` —
+    /// five colon-separated segments in total — to match the Go CLI.
+    #[test]
+    fn salt_state_matches_go_wire_format() {
+        let mgr = PassphraseSecretsManager::new("pass").unwrap();
+        let salt_state = mgr.salt_state();
+
+        let parts: Vec<&str> = salt_state.split(':').collect();
+        assert_eq!(parts.len(), 5, "v1:SALT:v1:NONCE:CT");
+        assert_eq!(parts[0], "v1");
+        assert_eq!(BASE64.decode(parts[1]).unwrap().len(), SALT_LEN);
+        assert_eq!(parts[2], "v1");
+
+        // The validation token decrypts to the literal "pulumi".
+        let validation = salt_state.splitn(3, ':').nth(2).unwrap();
+        let plaintext = mgr.decrypt_sync(validation).unwrap();
+        assert_eq!(plaintext, VALIDATION_PLAINTEXT);
+    }
+
     #[test]
     fn wrong_key_fails_decryption() {
         let key1 = derive_key("correct-passphrase", b"saltsalt");
@@ -436,13 +493,12 @@ mod tests {
         assert!(matches!(result, Err(SecretsError::InvalidSalt(_))));
     }
 
+    /// `encrypt_sync`/`decrypt_sync` round-trip without an async runtime.
     #[test]
-    fn hex_roundtrip() {
-        let bytes = [0xde, 0xad, 0xbe, 0xef, 0x01, 0x23, 0x45, 0x67];
-        let encoded = hex_encode(&bytes);
-        assert_eq!(encoded, "deadbeef01234567");
-        let decoded = hex_decode(&encoded).unwrap();
-        assert_eq!(decoded, bytes);
+    fn sync_encrypt_decrypt_roundtrip() {
+        let mgr = PassphraseSecretsManager::new("pass").unwrap();
+        let ciphertext = mgr.encrypt_sync(b"raw string value").unwrap();
+        assert_eq!(mgr.decrypt_sync(&ciphertext).unwrap(), b"raw string value");
     }
 
     #[tokio::test]
