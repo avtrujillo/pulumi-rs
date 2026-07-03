@@ -243,16 +243,30 @@ third-party integrations) depend on stable interfaces.
    version once available, so day-to-day `cargo test` exercises consumption
    too — at the cost of testdata lagging HEAD.
 
-## `flat_map` Secret/Known Propagation — In Progress
+## `flat_map` Secret/Known Propagation ✓ Done
 
 **Crate:** `pulumi-core`
 
-`Output::flat_map` currently initializes the result's `meta` from the outer output synchronously, then merges the inner output's metadata inside a lazy async block. This means `is_known()` / `is_secret()` on the result don't reflect the inner output's metadata until the future is driven.
+`Output::flat_map` now propagates inner known/secret metadata eagerly, in two
+tiers:
 
-The fix requires refactoring `Output<T>` to store a `JoinHandle` instead of a `Shared<BoxFuture<T>>`, so the inner computation is spawned eagerly and the handle can be awaited or checked for completion. Two tests are currently failing:
+- **Resolved source (fast path):** the source future is polled with
+  `now_or_never()`; if it has already resolved, `f` runs synchronously inside
+  `flat_map` and the inner metadata is merged before returning, so
+  `is_known()` / `is_secret()` are correct immediately.
+- **Pending source:** the composed `Shared` future is additionally spawned on
+  the current Tokio runtime (when one exists), so the merge happens as soon as
+  the source resolves even if the caller never polls the result. Covered by
+  `test_flat_map_pending_source_converges_after_resolve`.
 
-- `output::tests::test_flat_map_propagates_secret_from_inner`
-- `output::tests::test_flat_map_propagates_unknown_from_inner`
+The originally proposed `JoinHandle` refactor was rejected: eager spawning
+alone cannot make a synchronous `is_secret()` check deterministic (on a
+current-thread runtime the spawned task hasn't run by the time the caller
+asserts), whereas the `now_or_never` fast path is deterministic for the
+resolved-source case the failing tests exercised. Known limitation: with a
+pending source, metadata converges shortly after resolution rather than
+atomically with it — matching the upstream SDKs, where secretness is itself
+promise-like.
 
 ## `output.rs` — Dep Tracking Refactor
 
