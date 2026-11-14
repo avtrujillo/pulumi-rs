@@ -243,22 +243,24 @@ third-party integrations) depend on stable interfaces.
    version once available, so day-to-day `cargo test` exercises consumption
    too — at the cost of testdata lagging HEAD.
 
-## `flat_map` Secret/Known Propagation — In Progress
+## `Output<T>` Metadata Propagation ✓ Done
 
 **Crate:** `pulumi-core`
 
-`Output::flat_map` currently initializes the result's `meta` from the outer output synchronously, then merges the inner output's metadata inside a lazy async block. This means `is_known()` / `is_secret()` on the result don't reflect the inner output's metadata until the future is driven.
+`Output<T>` now resolves to its value *together with* its metadata (known, secret, deps), instead of keeping the metadata in shared mutable state next to the future. Combinators merge metadata at the moment they produce the value, so `flat_map` picks up the inner output's secretness and knownness.
 
-The fix requires refactoring `Output<T>` to store a `JoinHandle` instead of a `Shared<BoxFuture<T>>`, so the inner computation is spawned eagerly and the handle can be awaited or checked for completion. Two tests are currently failing:
+- `is_known()`, `is_secret()` and `dependencies()` are async and wait for the output to resolve, matching the Node, Python and Go SDKs. A rejected output reports not known, not secret, no deps.
+- `OutputResolver::add_deps` and `set_secret` take `&mut self`; `add_deps` is no longer async. What they set takes effect at resolution, so outputs derived *before* the resolver was marked secret or unknown now see it.
+- Deps are deduplicated in first-seen order and no longer sit behind a lock.
+- An unknown output is a state rather than an error internally: combinators skip their callback and stay unknown. Awaiting one still returns `Err("output value is unknown")`.
 
-- `output::tests::test_flat_map_propagates_secret_from_inner`
-- `output::tests::test_flat_map_propagates_unknown_from_inner`
+The `JoinHandle` approach planned here was dropped: a spawned task does not run until the caller yields, so a synchronous `is_secret()` straight after `flat_map` would still have been wrong. Eager execution of `map`/`flat_map` callbacks (which the other SDKs have) remains a separate open question.
 
-## `output.rs` — Dep Tracking Refactor
+## `output.rs` — Dep Representation
 
 **Crate:** `pulumi-core`
 
-The current `deps: Mutex<Vec<String>>` in `OutputMeta` accumulates URN strings lazily as combinators resolve. Evaluate whether the representation, locking strategy, and propagation model are correct and efficient — particularly for deeply chained outputs.
+Deps are a `Vec<String>` of URNs carried in the resolved value and merged with a linear `contains` check. Evaluate whether URN strings are the right representation (the other SDKs track resource objects) and whether merging needs a set for outputs with very many deps.
 
 ## Audit `std::sync` Usage in Async Contexts
 

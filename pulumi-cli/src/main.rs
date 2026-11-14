@@ -582,7 +582,7 @@ async fn main() {
                         println!("{}", serde_json::to_string_pretty(&config).unwrap());
                     } else {
                         for (key, cv) in &config {
-                            let secret_marker = if cv.secret { " [secret]" } else { "" };
+                            let secret_marker = if cv.is_secret { " [secret]" } else { "" };
                             println!("{key}: {}{secret_marker}", cv.value);
                         }
                     }
