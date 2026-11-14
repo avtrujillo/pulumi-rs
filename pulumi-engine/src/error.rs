@@ -6,7 +6,10 @@ pub enum Error {
     /// gRPC transport error.
     Transport(tonic::transport::Error),
     /// gRPC status error from a provider operation.
-    ProviderStatus(tonic::Status),
+    ///
+    /// Boxed because `tonic::Status` is large (176 bytes); keeping it inline
+    /// would make every `Result<T, Error>` that large on the success path too.
+    ProviderStatus(Box<tonic::Status>),
     /// The user program exited with a non-zero status.
     ProgramFailed {
         code: i32,
@@ -52,7 +55,7 @@ impl From<std::io::Error> for Error {
 
 impl From<tonic::Status> for Error {
     fn from(s: tonic::Status) -> Self {
-        Error::ProviderStatus(s)
+        Error::ProviderStatus(Box::new(s))
     }
 }
 

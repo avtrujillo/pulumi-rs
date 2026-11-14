@@ -6,7 +6,10 @@ pub enum Error {
     /// A gRPC transport error.
     Transport(tonic::transport::Error),
     /// A gRPC status error returned by the engine or monitor.
-    Rpc(tonic::Status),
+    ///
+    /// Boxed because `tonic::Status` is large (176 bytes); keeping it inline
+    /// would make every `Result<T, Error>` that large on the success path too.
+    Rpc(Box<tonic::Status>),
     /// A missing required environment variable.
     MissingEnv(&'static str),
     /// A serialization or deserialization error.
@@ -46,7 +49,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Transport(e) => Some(e),
-            Error::Rpc(e) => Some(e),
+            Error::Rpc(e) => Some(e.as_ref()),
             Error::Serde(e) => Some(e),
             _ => None,
         }
@@ -61,7 +64,7 @@ impl From<tonic::transport::Error> for Error {
 
 impl From<tonic::Status> for Error {
     fn from(e: tonic::Status) -> Self {
-        Error::Rpc(e)
+        Error::Rpc(Box::new(e))
     }
 }
 

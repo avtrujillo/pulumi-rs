@@ -1,0 +1,5 @@
+# tonic's service traits require handlers to return `Result<_, tonic::Status>`,
+# and `Status` (176 bytes) is over clippy's 128-byte limit for `Err` variants.
+# Ignore that one type rather than silencing `result_large_err` everywhere, so
+# the lint still catches our own error types growing too large.
+large-error-ignored = ["tonic::Status"]

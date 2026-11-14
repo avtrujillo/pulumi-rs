@@ -1,5 +1,4 @@
 #![feature(impl_trait_in_assoc_type)]
-#![allow(clippy::result_large_err)]
 
 //! # Pulumi SDK for Rust
 //!
