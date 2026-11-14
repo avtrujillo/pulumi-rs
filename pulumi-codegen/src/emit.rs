@@ -340,21 +340,11 @@ fn emit_resource_file(resource: &ResolvedResource, version: &str) -> String {
     } else {
         "pulumi::Resource"
     };
-    let token_attr = if resource.is_component {
-        "type_token"
-    } else {
-        "type_token"
-    };
 
     emit_doc_comment(&mut out, resource.description.as_deref());
     emit_deprecation_attr(&mut out, resource.deprecation.as_deref());
     writeln!(out, "#[derive({derive})]").unwrap();
-    writeln!(
-        out,
-        "#[pulumi({token_attr} = \"{}\")]",
-        resource.type_token
-    )
-    .unwrap();
+    writeln!(out, "#[pulumi(type_token = \"{}\")]", resource.type_token).unwrap();
     writeln!(out, "#[pulumi(inputs = {}Args)]", resource.rust_name).unwrap();
     writeln!(out, "#[pulumi(outputs = {}Outputs)]", resource.rust_name).unwrap();
     writeln!(out, "#[pulumi(version = \"{version}\")]").unwrap();
