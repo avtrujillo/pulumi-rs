@@ -256,6 +256,8 @@ third-party integrations) depend on stable interfaces.
 
 The `JoinHandle` approach planned here was dropped: a spawned task does not run until the caller yields, so a synchronous `is_secret()` straight after `flat_map` would still have been wrong. Eager execution of `map`/`flat_map` callbacks (which the other SDKs have) remains a separate open question.
 
+This replaces an interim fix from July 2026 (PR #24), which kept the accessors synchronous: `flat_map` ran its callback immediately when the source had already resolved (`now_or_never()`) and spawned a task otherwise. That was correct for resolved sources, but for a pending source the metadata only converged shortly *after* resolution, so a synchronous `is_secret()` could still briefly report `false` for a secret.
+
 ## `output.rs` — Dep Representation
 
 **Crate:** `pulumi-core`
