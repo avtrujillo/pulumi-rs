@@ -161,7 +161,7 @@ impl Settings {
 
     /// Returns whether a configuration value is secret.
     pub fn is_config_secret(&self, key: &str) -> bool {
-        self.config_secret_keys.contains(&key.to_string())
+        self.config_secret_keys.iter().any(|k| k == key)
     }
 }
 

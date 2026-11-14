@@ -70,9 +70,9 @@ fn random_schema_random_id_resource() {
     assert!(random_id.properties.contains_key("dec"));
 
     // Check required fields
-    assert!(random_id.required_inputs.contains(&"byteLength".to_string()));
-    assert!(random_id.required.contains(&"b64Std".to_string()));
-    assert!(random_id.required.contains(&"hex".to_string()));
+    assert!(random_id.required_inputs.iter().any(|i| i == "byteLength"));
+    assert!(random_id.required.iter().any(|i| i == "b64Std"));
+    assert!(random_id.required.iter().any(|i| i == "hex"));
 
     // Check property types
     let byte_length = &random_id.input_properties["byteLength"];
@@ -100,9 +100,7 @@ fn random_schema_random_string_resource() {
     assert!(random_string.input_properties.contains_key("numeric"));
 
     // length is required
-    assert!(random_string
-        .required_inputs
-        .contains(&"length".to_string()));
+    assert!(random_string.required_inputs.iter().any(|i| i == "length"));
 
     let length = &random_string.input_properties["length"];
     assert_eq!(length.type_.as_deref(), Some("integer"));
