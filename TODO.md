@@ -254,9 +254,39 @@ third-party integrations) depend on stable interfaces.
 - Deps are deduplicated in first-seen order and no longer sit behind a lock.
 - An unknown output is a state rather than an error internally: combinators skip their callback and stay unknown. Awaiting one still returns `Err("output value is unknown")`.
 
-The `JoinHandle` approach planned here was dropped: a spawned task does not run until the caller yields, so a synchronous `is_secret()` straight after `flat_map` would still have been wrong. Eager execution of `map`/`flat_map` callbacks (which the other SDKs have) remains a separate open question.
+The `JoinHandle` approach planned here was dropped: a spawned task does not run until the caller yields, so a synchronous `is_secret()` straight after `flat_map` would still have been wrong. Eager execution of `map`/`flat_map` callbacks is tracked separately below.
 
 This replaces an interim fix from July 2026 (PR #24), which kept the accessors synchronous: `flat_map` ran its callback immediately when the source had already resolved (`now_or_never()`) and spawned a task otherwise. That was correct for resolved sources, but for a pending source the metadata only converged shortly *after* resolution, so a synchronous `is_secret()` could still briefly report `false` for a secret.
+
+## Toolchain Bump to `nightly-2026-11-14` ✓ Done
+
+**Crate:** all
+
+The pin moved from `nightly-2026-03-03` (1.96-nightly) to `nightly-2026-11-14` (1.102-nightly). This crosses two compiler switches that are on by default on nightly: the next-generation trait solver (August 2026) and the Polonius Alpha borrow checker (August 2026). Neither broke anything: the workspace compiles without warnings and all tests pass.
+
+- Cargo's new build-directory layout (1.100) is in effect. Final binaries still land in `target/debug/`, so the `integration-tests/testdata/*/Pulumi.yaml` paths are unaffected.
+- Clippy now applies `result_large_err` to `async fn` (fixed in 1.98), which surfaced the error-size issue below.
+- The integration tests were **not** run on the new toolchain; see the open item below.
+
+## Error Size (`result_large_err`) ✓ Done
+
+**Crate:** `pulumi-core`, `pulumi-engine`
+
+`tonic::Status` is 176 bytes, over clippy's 128-byte limit for `Err` variants. `pulumi::Error` carried one inline, so every user `async fn` returning `pulumi::Result<T>` got a clippy warning on Rust 1.98+; the crate-wide `allow` in `pulumi-core` hid it only inside that crate.
+
+- `pulumi_core::Error::Rpc` and `pulumi_engine::Error::ProviderStatus` now hold `Box<tonic::Status>`. The `From<tonic::Status>` impls box it, so `?` is unchanged.
+- The `#![allow(clippy::result_large_err)]` in `pulumi-core/src/lib.rs` is removed.
+- A workspace `clippy.toml` sets `large-error-ignored = ["tonic::Status"]` for the engine's gRPC handlers, which must return `Status` directly because tonic's service traits require it.
+
+## Config Secret Handling in CLI and Workspace ✓ Done
+
+**Crate:** `pulumi-cli`, `pulumi-automation`
+
+From PR #24 (July 2026):
+
+- `config ls` masks secret values (text and JSON) unless `--show-secrets` is passed, matching the upstream CLI.
+- `LocalWorkspace::get_all_config` passes `--show-secrets`, matching the upstream automation SDKs.
+- `set_config` passes the value after a `--` separator with an explicit `--secret`/`--plaintext` flag, so a value that looks like a flag cannot be interpreted as one.
 
 ## `output.rs` — Dep Representation
 
@@ -280,7 +310,12 @@ Search the codebase for `unwrap()`, `expect()`, `panic!`, and indexing operation
 
 **Crate:** `pulumi-core`
 
-`output.rs` clones futures, `Arc`s, and metadata structs heavily to satisfy the borrow checker across async boundaries. Audit all `.clone()` calls to determine which are unavoidable and which indicate a structural problem (e.g., unnecessary duplication of work, or a design that fights the ownership model).
+The metadata refactor removed the `Arc`/lock clones, but two kinds remain and are worth auditing:
+
+- **Per-awaiter clones of the resolved data.** `Shared` hands each awaiter a clone of what the future resolved to, which is now the value *and* its deps `Vec`. Every combinator and every `get()` pays for that.
+- **Accessors clone the whole value to read one flag.** `is_known()`, `is_secret()` and `dependencies()` each await a clone of the full resolved data, including `T`, just to return a `bool` or the deps.
+
+Putting the resolved data behind an `Arc` (so awaiters share it) would address both, at the cost of one more allocation per output.
 
 ## Automated Code Review — Compare Against All SDKs
 
@@ -294,16 +329,47 @@ The review harness currently compares the Rust SDK against a single upstream SDK
 
 The initial automated review pass identified issues beyond secret propagation (which was addressed first). Work through the remaining flagged items from `review-output/` and address them.
 
+Status as of 2026-11-16 (`python scripts/sdk_review.py --report`):
+
+- **Stale, need re-review before acting on them:** `output`, `context`, `error`, `serde`, `automation_workspace`, `automation_config`. All six were changed after their review.
+- **Verdict "MAJOR GAPS":** `asset` and `automation_workspace`. These are the two to work on first once the reviews are fresh.
+- The May review of `output` predates the metadata refactor. Of its findings, metadata loss in `all`/`all2`/`all3` and in `flat_map` is fixed; still open are the missing utilities (`unsecret`, an `Input<T>` type, `concat`/`interpolate`, JSON helpers) and `resolve_unknown` requiring a placeholder value.
+
+## Eager Execution of `map` / `flat_map` Callbacks
+
+**Crate:** `pulumi-core`
+
+Outputs here are lazy: a `map` or `flat_map` callback only runs when something awaits the result. In the Node, Python and Go SDKs an `apply` callback runs as soon as its source resolves, whether or not anything consumes the result, and programs rely on that for side effects. Decide whether to match that (spawning a task per combinator, which needs a runtime at construction time and a way to wait for outstanding tasks before the program exits) or to document the difference.
+
+## Run Integration Tests on the New Toolchain
+
+**Crate:** `integration-tests`
+
+The opt-in integration tests (`cargo test -p integration-tests --features integration`) have not been run since the bump to `nightly-2026-11-14`, the `Output<T>` refactor, or the PR #24 config changes, because they need the `pulumi` binary on PATH. Run them on a machine that has it. `secrets` and `config` are the ones most likely to be affected.
+
+## Remaining Clippy Warnings
+
+**Crate:** `pulumi-codegen`, `pulumi-engine`
+
+Ten style warnings remain, all older than the toolchain bump and all mechanical:
+
+- `pulumi-codegen`: four collapsible `if`s (`ir.rs`, `naming.rs`) and one derivable `Default` (`emit.rs`).
+- `pulumi-engine`: one function with eight arguments (`monitor_service.rs`, `apply_transforms`) and four test helpers in `test_utils.rs` that could be `async fn`.
+
 ## Stable Rust Support — Non-Goal
 
 **Stable Rust is a non-goal until the next-generation trait solver ships.**
 
-The SDK relies on `impl_trait_in_assoc_type` (rust-lang/rust#63063) and Rust
-edition 2024, both of which require nightly. Rather than degrading the API with
-boxed futures or manual future types as a workaround, we are waiting for the
-next-gen trait solver to land on stable — at which point
-`impl_trait_in_assoc_type` (and potentially edition 2024) will stabilize
-naturally.
+The SDK relies on `impl_trait_in_assoc_type` (rust-lang/rust#63063), which
+requires nightly. (Edition 2024, which the workspace also uses, has been stable
+since Rust 1.85.) Rather than degrading the API with boxed futures or manual
+future types as a workaround, we are waiting for the next-gen trait solver to
+land on stable — at which point `impl_trait_in_assoc_type` can stabilize.
 
-The nightly toolchain is pinned in `rust-toolchain.toml` (`nightly-2026-03-03`)
+Status as of November 2026: the next-gen trait solver has been on by default on
+nightly since August 2026, and the Rust blog says the team plans to stabilize
+it "in the next months". The tracking issue for `impl_trait_in_assoc_type` is
+still open and marked blocked on that work. Rust 1.100 is the current stable.
+
+The nightly toolchain is pinned in `rust-toolchain.toml` (`nightly-2026-11-14`)
 so builds are reproducible regardless.

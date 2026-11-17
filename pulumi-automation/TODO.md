@@ -2,8 +2,31 @@
 
 ## Tests
 
-- Integration tests using a real `pulumi` binary (gated behind a feature flag
-  or separate workspace member)
+**DONE.** Integration tests using a real `pulumi` binary now exist as the
+`integration-tests` workspace member, gated behind its `integration` feature
+(`cargo test -p integration-tests --features integration`). They drive
+`LocalWorkspace` and `Stack` end to end.
+
+Still open:
+- They have not been run since the November 2026 toolchain bump or the config
+  changes below, because they need `pulumi` on PATH. See the root TODO.md.
+- `NativeStack` has no end-to-end test against a real provider.
+
+## Config Secret Handling
+
+**DONE** (PR #24, July 2026).
+- `get_all_config` passes `--show-secrets`, matching the upstream automation
+  SDKs. It previously returned masked values.
+- `set_config` passes the value after a `--` separator with an explicit
+  `--secret` / `--plaintext` flag, so a flag-like value cannot be interpreted
+  as a CLI flag. Covered by three tests on `set_config_args`.
+
+## Module Reviews
+
+The May 2026 automated review rated `automation_workspace` as having **major
+gaps**, and both it and `automation_config` have changed since, so they need
+re-reviewing before the findings are acted on. See `review-output/` and the
+root TODO.md.
 
 ## NativeStack Parity
 
@@ -34,7 +57,8 @@ stderr so `CommandFailed` messages are concise. Feature-gated
 `From<pulumi_engine::Error>` maps `ProgramFailed → CommandFailed` for the
 `native-engine` path. 15 tests added to `error.rs`.
 
-## Edition
+## Toolchain
 
-Uses edition 2024 (nightly). Stable Rust is a non-goal until the next-gen
-trait solver ships. See the root TODO.md.
+Uses edition 2024, which is stable. This crate itself needs nothing from
+nightly, but the workspace is pinned to nightly because `pulumi-core` uses
+`impl_trait_in_assoc_type`. See the root TODO.md.

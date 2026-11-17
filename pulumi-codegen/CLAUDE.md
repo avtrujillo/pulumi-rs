@@ -7,7 +7,7 @@ crates with derive macros, serde attributes, and doc comments.
 
 ## Current Status
 
-**All 6 stages complete.** Full pipeline from schema JSON to generated Rust crate with 123 passing tests + working CLI. Generated `pulumi-random` crate passes `cargo check`.
+**All 6 stages complete.** Full pipeline from schema JSON to generated Rust crate with 130 passing tests (116 unit, 14 in `tests/codegen_tests.rs`) + working CLI. Generated `pulumi-random` crate passes `cargo check`. The only schema checked into `tests/` is `random_schema.json`.
 
 ## Implementation Stages
 
@@ -105,8 +105,9 @@ These decisions are final — do not revisit unless there's a concrete problem.
 3. **Always emit `#[serde(skip_serializing_if = "Option::is_none")]`** on optional
    input fields. Providers distinguish absent vs null.
 
-4. **Union types (`oneOf`) → `serde_json::Value`** for now. Proper enum generation
-   is a follow-up.
+4. **Union types (`oneOf`) → named `#[serde(untagged)]` enums** in `crate::types`
+   (e.g. `StringOrInteger`), deduplicated across the schema. This replaced the
+   original `serde_json::Value` placeholder.
 
 5. **Asset/Archive → `pulumi::Asset` / `pulumi::Archive`**. `pulumi-core` provides dedicated enums; codegen maps `pulumi.json#/Asset` and `pulumi.json#/Archive` refs to these types.
 
@@ -124,7 +125,8 @@ These decisions are final — do not revisit unless there's a concrete problem.
 10. **Skip overlays** (`isOverlay: true`) — these are hand-written by SDK authors.
 
 11. **`isComponent` resources** use `#[derive(pulumi::ComponentResource)]` instead
-    of `#[derive(pulumi::Resource)]`.
+    of `#[derive(pulumi::Resource)]`. Both derives take the same
+    `#[pulumi(type_token = "...")]` attribute, so only the derive name differs.
 
 12. **No dependency on `pulumi` or `pulumi-core`** from this crate. The codegen
     only generates source text. The *generated* crates depend on `pulumi`.
@@ -175,7 +177,7 @@ Type references: `{"type": "string"}`, `{"type": "array", "items": ...}`,
 | `$ref` to `pulumi.json#/Any` | `serde_json::Value` |
 | `$ref` to `pulumi.json#/Asset` | `pulumi::Asset` |
 | `$ref` to `pulumi.json#/Archive` | `pulumi::Archive` |
-| `oneOf` | `serde_json::Value` |
+| `oneOf` | generated `#[serde(untagged)]` enum in `crate::types` |
 | not in `required`/`requiredInputs` | `Option<T>` |
 
 ## Test Strategy
@@ -205,8 +207,9 @@ cargo build -p pulumi-codegen
 cargo test -p pulumi-codegen
 ```
 
-Note: this crate is NOT yet in the workspace `Cargo.toml` members list.
-Add it when Stage 1 begins:
-```toml
-members = ["pulumi-core", "pulumi-macros", "pulumi", "pulumi-automation", "pulumi-cli", "pulumi-engine", "pulumi-codegen"]
-```
+This crate is a member of the workspace, so `cargo test --workspace` and
+`cargo clippy --workspace` cover it. It builds on the workspace's pinned
+nightly but uses no nightly features itself.
+
+Clippy reports five style warnings here (four collapsible `if`s in `ir.rs` and
+`naming.rs`, one derivable `Default` in `emit.rs`); see TODO.md.

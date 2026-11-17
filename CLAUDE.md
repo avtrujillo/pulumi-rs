@@ -11,12 +11,20 @@ Native Rust SDK for [Pulumi](https://www.pulumi.com/) infrastructure-as-code. Co
 This is a Cargo workspace. Crates:
 
 - **`pulumi-core`** — Core SDK: gRPC client, `Output<T>`, resource/invoke builders, serde, logging.
-- **`pulumi-macros`** — Proc-macro crate: `#[derive(Resource)]`, `#[derive(ComponentResource)]`, `#[derive(ProviderFunction)]`.
+- **`pulumi-macros`** — Proc-macro crate: `#[derive(Resource)]`, `#[derive(ComponentResource)]`, `#[derive(ProviderFunction)]`, `#[derive(ComponentMethod)]`.
 - **`pulumi`** — Public-facing crate that re-exports `pulumi-core`. Enable `macros` feature to get derive macros.
 - **`pulumi-automation`** — Automation API: drive stack operations (`up`, `preview`, `destroy`, `refresh`) programmatically by wrapping the Pulumi CLI. Enable the `native-engine` feature to use the Rust-native engine instead.
 - **`pulumi-engine`** — Rust-native Pulumi engine: implements the ResourceMonitor and Engine gRPC servers. Used as an alternative to the Go-based `pulumi` CLI engine.
-- **`pulumi-cli`** — Rust-native CLI for Pulumi stack operations, built on `pulumi-automation`.
-- **`pulumi-codegen`** — **(IN PROGRESS)** Code generator: reads Pulumi provider schema JSON, emits typed Rust crates. See `pulumi-codegen/PLAN.md` for full design and `pulumi-codegen/CLAUDE.md` for implementation status.
+- **`pulumi-cli`** — Rust-native CLI (`pulumi-rs`) for Pulumi stack, config and plugin operations, built on `pulumi-automation`.
+- **`pulumi-codegen`** — Code generator: reads Pulumi provider schema JSON, emits typed Rust crates. The pipeline is complete; validation against large providers (AWS etc.) is still open. See `pulumi-codegen/PLAN.md` for full design and `pulumi-codegen/CLAUDE.md` for implementation status.
+- **`integration-tests`** — End-to-end tests (`publish = false`) that build the small programs under `integration-tests/testdata/*` (each its own workspace member) and run them through a real `pulumi up` / `destroy` against a local file backend. Opt-in via `--features integration`; they need the `pulumi` binary on PATH and skip when it is missing.
+
+Not crates, but part of the repo:
+
+- **`scripts/`** — `sdk_review.py`, the automated review harness that compares each Rust module against the upstream SDKs, one Claude call per module. `python scripts/sdk_review.py --report` shows which reviews are stale. Results go to `review-output/`.
+- **`upstream/`** — the main Pulumi repository as a git submodule, used as the reference for those reviews.
+
+Each crate has its own `CLAUDE.md` (how it works) and `TODO.md` (what is done and open); this file and the root `TODO.md` cover the workspace as a whole.
 
 ## Build Commands
 
@@ -41,12 +49,12 @@ The SDK entry point is `pulumi_core::run(program)` in `pulumi-core/src/lib.rs`, 
 ### Key modules (in `pulumi-core/src/`)
 
 - **`connection.rs`** — Trait abstractions (`MonitorConnection`, `EngineConnection`) over the gRPC connections. Uses RPITIT (return-position `impl Trait` in traits) for zero-cost async dispatch. Provides `GrpcMonitor`/`GrpcEngine` (real gRPC) and `MockMonitor`/`MockEngine` (for testing).
-- **`output.rs`** — `Output<T>`, the core Pulumi type representing potentially-unknown, potentially-secret async values. Wraps `Shared<BoxFuture<T>>` with dependency/secret/known metadata. Supports `map`, `flat_map`, `all`, `all2`, `all3` combinators. `OutputResolver` resolves or rejects pending outputs (auto-rejects on drop).
+- **`output.rs`** — `Output<T>`, the core Pulumi type representing potentially-unknown, potentially-secret async values. Wraps a `Shared<BoxFuture>` that resolves to the value *together with* its metadata (known, secret, dependency URNs), so combinators merge metadata at the moment they produce the value. `is_known()`, `is_secret()` and `dependencies()` are therefore async and wait for the output to resolve. Supports `map`, `flat_map`, `all`, `all2`, `all3`, `from_future` combinators. `OutputResolver` resolves or rejects pending outputs (auto-rejects on drop).
 - **`context.rs`** — `Context<M, E>` is generic over `MonitorConnection` and `EngineConnection`. `Settings` parses all `PULUMI_*` env vars. Provides config access via `get_config()`/`require_config()`.
 - **`resource.rs`** — `Resource` trait and `ResourceBuilder` for registering resources. Also exposes `ComponentBuilder`, `RemoteComponentBuilder`, `ReadBuilder`. All builders implement `IntoFuture` for `.await`.
 - **`invoke.rs`** — `ProviderFunction` trait with `InvokeBuilder`; `ComponentMethod` trait with `CallBuilder`. Both implement `IntoFuture`.
 - **`serde.rs`** — Bidirectional JSON ↔ Protobuf Struct conversion. Handles Pulumi wire format for secrets (magic key `4dabf18193072939515e22adb298388d`) and unknowns (sentinel UUID `04da6b54-80e4-46f7-96ec-b56ff0331ba9`).
-- **`error.rs`** — `Error` enum with variants for transport, RPC, missing env, serde, resource failure, invoke failure, and custom errors.
+- **`error.rs`** — `Error` enum with variants for transport, RPC, missing env, serde, resource failure, invoke failure, and custom errors. The RPC variant holds a `Box<tonic::Status>` to keep `Result<T, Error>` small; `From<tonic::Status>` does the boxing, so `?` works unchanged.
 - **`log.rs`** — `debug()`, `info()`, `warn()`, `error()`, `status()` send log messages to the Pulumi engine.
 - **`stack.rs`** — Registers root stack resource (`pulumi:pulumi:Stack`) and exports outputs.
 - **`stack_reference.rs`** — `StackReference` / `StackReferenceBuilder` for cross-stack references.
@@ -59,15 +67,17 @@ Located in `pulumi-core/proto/pulumi/`. Key services: `ResourceMonitor` (resourc
 ### Key patterns
 
 - **`ResourceBuilder` pattern**: Fluent API — `ResourceBuilder::<R>::new(&ctx, name, inputs)` → `.options()` → `.parent()` → `.provider()` → `.depends_on()` → `.await` returns `RegisteredResource<R>`.
-- **`Output<T>` resolution**: Create with `Output::new()` which returns `(Output<T>, OutputResolver<T>)`. The resolver must be used to complete the output; dropping it without resolving triggers auto-rejection.
+- **`Output<T>` resolution**: `Output::new(value)` creates an already-resolved output. `Output::unresolved()` returns `(Output<T>, OutputResolver<T>)`; the resolver must be used to complete the output, and dropping it without resolving triggers auto-rejection. `OutputResolver::add_deps` and `set_secret` take `&mut self` and take effect when the output resolves, so outputs derived earlier still see them.
+- **`Output<T>` metadata**: never read known/secret/deps from side state — they only exist once the output resolves. An unknown output (`Output::unknown()`) has no value: combinators skip their callback and stay unknown, and awaiting it returns an error.
 - **Connection traits**: `MonitorConnection` and `EngineConnection` abstract over gRPC clients, enabling mock implementations for testing without a running engine.
-- **Tests**: Unit tests live in `#[cfg(test)] mod tests` within `output.rs` (15 async tests), `context.rs` (10 tests), and `serde.rs` (2 tests). All async tests use `#[tokio::test]`.
+- **Tests**: Unit tests live in `#[cfg(test)] mod tests` next to the code they cover (about 440 across the workspace, 160 of them in `pulumi-core`). All async tests use `#[tokio::test]`. The end-to-end tests in `integration-tests/` are opt-in (`cargo test -p integration-tests --features integration`) and need the `pulumi` binary on PATH.
 
 ## Conventions
 
 - Rust edition 2024; all public APIs are async (Tokio runtime)
 - `Output<T>` implements `IntoFuture` so it can be `.await`ed directly
-- Thread safety via `Arc<Mutex<>>` on shared state
+- Thread safety via `Arc<Mutex<>>` on shared state (`Output<T>` itself holds no locks)
 - Doctests are disabled (`doctest = false` in Cargo.toml)
 - Connection traits use RPITIT for zero-cost async dispatch (no boxing, no vtables)
-- Nightly toolchain pinned in `rust-toolchain.toml` (`nightly-2026-03-03`)
+- Nightly toolchain pinned in `rust-toolchain.toml` (`nightly-2026-11-14`, Rust 1.102). Nightly is required for `#![feature(impl_trait_in_assoc_type)]` in `pulumi-core`; this nightly has the next-generation trait solver and the Polonius Alpha borrow checker on by default.
+- Error enums box `tonic::Status` rather than holding it inline (it is 176 bytes, over clippy's `result_large_err` limit). The workspace `clippy.toml` exempts `tonic::Status` itself, because tonic's service traits require handlers to return it directly; don't add crate-wide `#![allow(clippy::result_large_err)]`.
