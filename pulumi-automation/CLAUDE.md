@@ -19,6 +19,10 @@ So `pulumi-automation` sits *outside* the CLI (driving it), while `pulumi-core` 
 cargo build -p pulumi-automation
 cargo test -p pulumi-automation
 cargo clippy -p pulumi-automation
+
+# native.rs is only compiled with the feature, so also run:
+cargo test -p pulumi-automation --features native-engine
+cargo clippy -p pulumi-automation --features native-engine --all-targets
 ```
 
 Doctests are disabled (`doctest = false`).
@@ -65,6 +69,7 @@ Dev-only: **tokio** (rt-multi-thread, macros) and **tempfile**.
 - `get_all_config()` passes `--show-secrets`, as the upstream automation SDKs do, so secrets come back **decrypted** with `is_secret: true`. Callers that display config must mask them; `pulumi-cli`'s `config ls` does.
 - `set_config()` builds its arguments in `set_config_args()`: an explicit `--secret` or `--plaintext`, then `--`, then the value. The separator stops a value that starts with `-` from being read as a CLI flag. Keep the value last and after `--`.
 - `ConfigValue`'s `Debug` masks secrets, so they do not leak through `{:?}`, panics or test failures.
+- **Known gap:** `NativeStack` writes its config file (`.pulumi-rs/<stack>.config.json`) as plain JSON, so secret values are stored unencrypted on disk. See TODO.md.
 
 ## Tests
 

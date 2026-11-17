@@ -6,6 +6,10 @@
 |---|------|-------|--------|------------|-------|
 | 1 | crates.io publishing | all | Medium | Easy | API surface audit (`pulumi/src/lib.rs`, `pulumi-core/src/lib.rs`) and crate-level docs/README needed before publishing. Set `workspace.package.version`, maintain `CHANGELOG.md`, automate publish order with `cargo-release`. Includes a published-artifact smoke test (see section below) — existing integration tests use workspace path deps and don't validate the published tarball. |
 | 2 | Codegen provider validation | `pulumi-codegen` | Medium | Medium | Only validated against `pulumi-random` and docker; run against AWS and other large providers that exercise deeply nested modules, complex `$ref` chains, and edge-case type references |
+| 3 | Make CI run | repo | Low | Easy | The workflow only triggers on `main`, which does not exist, and would fail on the toolchain pin, clippy and formatting if it did. See "CI Never Runs" below. |
+| 4 | Preview / unknown resource outputs | `pulumi-core` | Medium | Medium | Resource outputs are deserialized straight into typed structs with no handling of preview unknowns. Likely breaks `pulumi preview` for new resources; unverified. See section below. |
+| 5 | Wire `Output<T>` into resource registration | `pulumi-core`, `pulumi-macros`, `pulumi-codegen` | High | Hard | `Output<T>` is not used by any builder, so there is no dependency tracking or secret propagation between resources. Subsumes item 4 if done fully. See section below. |
+| 6 | Encrypt `NativeStack` secret config | `pulumi-automation` | Low | Medium | Secret config values are written to `.pulumi-rs/<stack>.config.json` in plaintext. See `pulumi-automation/TODO.md`. |
 
 ## AI-Assisted Development: Effort vs Difficulty
 
@@ -21,6 +25,10 @@ Effort predicts how many sessions/messages a task takes, while difficulty predic
 |---|------|---|---|
 | 1 | crates.io publishing | Moderate total — config and process steps | Low peak — each step is independent |
 | 2 | Codegen provider validation | Moderate total — run codegen, fix issues iteratively | Moderate peak — need to understand provider schema edge cases while reading generated output |
+| 3 | Make CI run | Low total — one workflow file, then a formatting pass and a handful of lint fixes | Low peak — each failure is independent |
+| 4 | Preview / unknown resource outputs | Moderate total — reproduce, then touch the register/read paths and their tests | Moderate peak — wire format for unknowns, typed deserialization and preview semantics together |
+| 5 | Wire `Output<T>` into resource registration | High total — builders, traits, derive macros, codegen output and every test that constructs inputs | High peak — `Output`, serialization, dependency reporting and the generated-code shape must all be in view to choose an API |
+| 6 | Encrypt `NativeStack` secret config | Low total — one module plus tests | Moderate peak — must stay consistent with how the checkpoint's secrets manager derives and stores its key |
 
 ---
 
@@ -349,12 +357,74 @@ The opt-in integration tests (`cargo test -p integration-tests --features integr
 
 ## Remaining Clippy Warnings
 
-**Crate:** `pulumi-codegen`, `pulumi-engine`
+**Crate:** `pulumi-codegen`, `pulumi-engine`, `pulumi-automation`
 
-Ten style warnings remain, all older than the toolchain bump and all mechanical:
+Thirteen style warnings remain with `--all-features`, all mechanical:
 
 - `pulumi-codegen`: four collapsible `if`s (`ir.rs`, `naming.rs`) and one derivable `Default` (`emit.rs`).
 - `pulumi-engine`: one function with eight arguments (`monitor_service.rs`, `apply_transforms`) and four test helpers in `test_utils.rs` that could be `async fn`.
+- `pulumi-automation`: three in `native.rs`, which is only compiled with the `native-engine` feature — a redundant closure and two needless `.to_string()` calls.
+
+CI runs clippy with `-D warnings` but without `--all-targets`, so it sees the seven of these that are in non-test code (five in `pulumi-codegen`, `apply_transforms`, and the redundant closure in `native.rs`). Those have to go before CI can pass; the other six are in test code.
+
+## CI Never Runs
+
+**Crate:** repo (`.github/workflows/ci.yml`)
+
+The workflow triggers on pushes and pull requests to `main`, but the repository's branches are `master` and `nightly`; there is no `main`. So nothing has been checking pushes or PRs. A compile error in `pulumi-cli` (a missed rename) sat on `nightly` from May to November 2026 for this reason.
+
+To fix, in order:
+
+1. Change the triggers to the branches actually in use (`nightly`, and `master` if it is still meant to receive work).
+2. Stop hard-coding the toolchain. The workflow names `nightly-2026-03-03` twice (the cache key and the install step) while `rust-toolchain.toml` now says `nightly-2026-11-14`. Read the pin from `rust-toolchain.toml` so there is one source of truth.
+3. Make the checks pass. As of 2026-11-16, build and test pass with `--all-features`, but `cargo clippy ... -- -D warnings` fails on the seven non-test warnings above and `cargo fmt --all -- --check` fails on 30 files. Consider adding `--all-targets` to the clippy step so test code is linted too. The formatting fix is one `cargo fmt --all`, best done as its own commit so it doesn't bury real changes.
+4. Decide whether the integration tests should run in CI. They need the `pulumi` binary and currently skip without it, so today CI would report them as passing without running them.
+
+## Preview / Unknown Resource Outputs
+
+**Crate:** `pulumi-core`
+
+`ResourceBuilder`, `ReadBuilder` and `RemoteComponentBuilder` deserialize the engine's response straight into the resource's typed `Outputs` struct (`serde_json::from_value(result.outputs)` in `resource.rs`). Nothing on that path checks `ctx.is_dry_run()` or the unknown sentinel; `serde::is_unknown` exists but is only used in its own tests.
+
+During a preview, the engine cannot know the outputs of a resource that has not been created yet. Expected consequences, **inferred from the code and not yet reproduced**:
+
+- a required non-string output field fails to deserialize, so the program errors during `pulumi preview`;
+- a string field silently receives the sentinel UUID (`04da6b54-80e4-46f7-96ec-b56ff0331ba9`) as if it were a real value.
+
+Nothing would catch either today: `Stack::up` passes `--skip-preview`, the integration tests only run `up`, and the one unit test for preview mode (`test_preview_mode` in `test_support.rs`) uses an outputs struct whose only field is an `Option`, so `MockMonitor`'s empty preview outputs deserialize without complaint.
+
+First step: reproduce with a real `pulumi preview` (or the native engine with `dry_run`) against one of the `integration-tests/testdata` programs. The proper fix is the next item; a stopgap would be to detect unknowns before deserializing and surface a clear error or an explicit "unknown" result.
+
+## Wire `Output<T>` into Resource Registration
+
+**Crate:** `pulumi-core`, `pulumi-macros`, `pulumi-codegen`
+
+`Output<T>` is correct in isolation but nothing uses it. Outside `output.rs`, no code calls its accessors or combinators:
+
+- Resource and invoke builders take plain `Serialize` inputs, so an input cannot be another resource's not-yet-known output.
+- They return plain deserialized `Outputs`, so outputs carry no known/secret/dependency metadata.
+- `RegisterResourceRequest.property_dependencies` is always sent empty (`resource.rs`), so the engine learns about dependencies only through explicit `depends_on`.
+- Secretness of a resource output does not follow the value into another resource's inputs.
+
+In the Node, Python and Go SDKs these are the same mechanism: resource properties are `Output`s, inputs accept `Input<T>` (a value or an `Output`), and serializing the inputs is what collects dependencies and secrets. The May 2026 review of `output` flagged the missing `Input<T>` type for the same reason.
+
+This is a design decision before it is an implementation task, because it changes the shape of every generated resource (`Args` fields become `Input<T>`, `Outputs` fields become `Output<T>`) and therefore `pulumi-macros` and `pulumi-codegen` too. It should be settled before publishing, since it cannot be changed compatibly afterwards.
+
+## Dependency Refresh Before Publishing
+
+**Crate:** all
+
+`Cargo.lock` has not been updated since May 2026. Before publishing:
+
+- Check how far behind the direct dependencies are. `tonic` 0.12 and `prost` 0.13 are believed to be behind their current releases (not verified). This matters more than usual because tonic types appear in the public `Error` enums, so the tonic version is part of the public API.
+- Turn on Cargo's dependency cooldown first (`global-min-publish-age` under `[registry]` in `.cargo/config.toml`, available since Cargo 1.100), so `cargo update` skips versions published in the last few days. The August 2026 `arrayref` supply-chain attack was live for under two hours; a cooldown would have skipped it.
+- Update in small steps and run `cargo test --workspace --all-features` between them.
+
+## `#[non_exhaustive]` on Public Error Enums
+
+**Crate:** `pulumi-core`, `pulumi-automation`, `pulumi-engine`
+
+The public `Error` enums are plain enums. Once published, adding a variant is a breaking change for anyone who matches on them exhaustively. Mark them `#[non_exhaustive]` before the first release. The same question applies to other public enums that are likely to grow (`Asset`, `Archive`, `EngineEvent`).
 
 ## Stable Rust Support — Non-Goal
 

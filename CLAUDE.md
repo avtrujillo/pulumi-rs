@@ -29,11 +29,14 @@ Each crate has its own `CLAUDE.md` (how it works) and `TODO.md` (what is done an
 ## Build Commands
 
 ```bash
-cargo build          # Build the workspace (includes protobuf compilation via build.rs)
-cargo test           # Run all tests (async tests using #[tokio::test])
-cargo clippy         # Lint
-cargo test <name>    # Run a single test by name
+cargo build --workspace --all-features                  # Build everything (includes protobuf compilation via build.rs)
+cargo test --workspace --all-features                   # Run all tests (async tests using #[tokio::test])
+cargo clippy --workspace --all-features --all-targets   # Lint
+cargo fmt --all -- --check                              # Formatting check
+cargo test <name>                                       # Run a single test by name
 ```
+
+Always pass `--all-features` when verifying a change. Without it the `native-engine` code (`pulumi-automation/src/native.rs` and the CLI's `--native` paths) is not compiled at all, so errors there go unnoticed. These are the four checks `.github/workflows/ci.yml` runs (its clippy step adds `-D warnings` and omits `--all-targets`) — but that workflow only triggers on a `main` branch, which this repo does not have, so CI is not currently running (see TODO.md). Do not assume a pushed change has been checked.
 
 Protobuf client and server stubs are generated at build time by `build.rs` using `tonic-build` (`build_server(true)`). Requires `protoc` on the system PATH. Generated types are accessed via `crate::proto::pulumirpc`. Server stubs are used by `pulumi-engine` to implement the ResourceMonitor and Engine gRPC services.
 

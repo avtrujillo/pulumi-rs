@@ -21,6 +21,38 @@ Still open:
   `--secret` / `--plaintext` flag, so a flag-like value cannot be interpreted
   as a CLI flag. Covered by three tests on `set_config_args`.
 
+## `NativeStack` Stores Secret Config in Plaintext
+
+`NativeStack::save_config_map` (`native.rs`) serializes the whole config map
+with `serde_json::to_string_pretty` and writes it to
+`<work_dir>/.pulumi-rs/<stack>.config.json`. A value set with
+`ConfigValue::secret(...)` is written as-is, with `"secret": true` beside it.
+
+The checkpoint in the same directory *is* encrypted when
+`PULUMI_CONFIG_PASSPHRASE` is set, and the upstream CLI stores secret config
+encrypted in `Pulumi.<stack>.yaml`, so this file is the one place a secret
+sits unprotected on disk.
+
+To fix: encrypt secret values with the same `PassphraseSecretsManager` the
+checkpoint uses (`engine_options()` already builds one from the passphrase and
+the checkpoint's salt), and decrypt on load. Decide what happens when no
+passphrase is set: refusing to store a secret is safer than writing it in the
+clear. Until then, anyone using `NativeStack` should keep `.pulumi-rs/` out of
+version control.
+
+## Clippy Warnings
+
+Three warnings in `native.rs`, visible only with `--features native-engine`:
+a redundant closure (`.map_err(|e| Error::Json(e))`) and two needless
+`.to_string()` calls in its tests. CI lints with `--all-features` and
+`-D warnings`, so the redundant closure blocks CI once it is running; the two
+in test code would too if CI added `--all-targets`.
+
+## `#[non_exhaustive]` on `Error`
+
+Mark the public `Error` enum `#[non_exhaustive]` before the first release. See
+the root TODO.md.
+
 ## Module Reviews
 
 The May 2026 automated review rated `automation_workspace` as having **major

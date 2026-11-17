@@ -10,6 +10,19 @@ status.
 
 ## Open Items (details in the root TODO.md)
 
+- **Preview / unknown resource outputs** — `resource.rs` deserializes the
+  engine's outputs straight into the typed `Outputs` struct (three sites:
+  `ResourceBuilder`, `ReadBuilder`, `RemoteComponentBuilder`) with no handling
+  of preview unknowns. Likely breaks `pulumi preview` for new resources, or
+  passes the unknown sentinel through as a real string. Inferred from the
+  code; reproduce first.
+- **Wire `Output<T>` into resource registration** — no builder takes or
+  returns an `Output`, and `property_dependencies` is always sent empty, so
+  there is no dependency tracking or secret propagation between resources.
+  This is a design decision that also reshapes `pulumi-macros` and
+  `pulumi-codegen` output; settle it before publishing.
+- **`#[non_exhaustive]` on `Error`** (and likely `Asset` / `Archive`) before
+  the first release, so adding a variant later is not a breaking change.
 - **Dep representation** — deps are a `Vec<String>` of URNs; the other SDKs
   track resource objects.
 - **`.clone()` audit in `output.rs`** — each awaiter, and each call to
